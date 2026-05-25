@@ -1,20 +1,24 @@
-// CallForge — AI auto-calling backend (proof-of-concept)
+// CallForge — AI auto-calling backend (Twilio + OpenAI only)
 //
-// What this does:
-//   1. POST /api/ai-call   → starts an outbound AI phone call via Vapi.
-//                            The AI speaks Bangla, follows the generated
-//                            cold-call script, and tries to book a meeting.
-//   2. POST /api/vapi-webhook → Vapi calls this when the call ends. We pull
-//                            the transcript + structured lead/meeting data and
-//                            store it so the frontend can read the outcome.
-//   3. GET  /api/ai-call/:callId → frontend polls this for the result.
+// How it works (no third-party voice platform):
+//   1. POST /api/ai-call          → Twilio places an outbound call from YOUR
+//                                    Twilio number and streams the call audio to
+//                                    this server over a websocket.
+//   2. /media-stream (websocket)  → bridges Twilio's audio <-> OpenAI's Realtime
+//                                    API. OpenAI does speech-to-speech (listen +
+//                                    think + talk) in one connection, in English.
+//   3. When the call ends, a cheap gpt-4o-mini call reads the transcript and
+//      extracts the lead status + meeting time + summary.
+//   4. GET /api/ai-call/:callId   → the frontend polls this for the outcome.
 //
-// Vapi handles the hard parts (telephony + Bangla speech-to-text + text-to-
-// speech + the LLM loop) so this PoC stays small. Free trial credits are
-// enough to test a few calls. See server/.env.example for setup.
+// Only Twilio + OpenAI are used. Lowest-cost defaults: gpt-4o-mini-realtime for
+// the call, gpt-4o-mini for the post-call analysis. See server/.env.example.
 
 import express from "express";
 import cors from "cors";
+import { WebSocketServer, WebSocket } from "ws";
+import http from "node:http";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,87 +27,68 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_FILE = path.join(__dirname, "data", "calls.json");
 
 const PORT = process.env.PORT || 8787;
-const VAPI_API_KEY = process.env.VAPI_API_KEY;        // private key (server side)
-const VAPI_PHONE_NUMBER_ID = process.env.VAPI_PHONE_NUMBER_ID;
-const PUBLIC_URL = process.env.PUBLIC_URL;             // public https url for the webhook
-const LLM_PROVIDER = process.env.VAPI_LLM_PROVIDER || "anthropic";
-const LLM_MODEL = process.env.VAPI_LLM_MODEL || "claude-3-5-sonnet-20241022";
-const VOICE_PROVIDER = process.env.VAPI_VOICE_PROVIDER || "azure";
-const VOICE_ID = process.env.VAPI_VOICE_ID || "en-US-JennyNeural";
-const STT_PROVIDER = process.env.VAPI_STT_PROVIDER || "deepgram";
-const STT_MODEL = process.env.VAPI_STT_MODEL || "nova-2";
-const STT_LANGUAGE = process.env.VAPI_STT_LANGUAGE || "en";
+const PUBLIC_URL = process.env.PUBLIC_URL || "";           // e.g. https://abc123.ngrok.app
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const TWILIO_FROM_NUMBER = process.env.TWILIO_FROM_NUMBER;  // your Twilio number, E.164 e.g. +15551234567
+const REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || "gpt-4o-mini-realtime-preview";
+const ANALYSIS_MODEL = process.env.OPENAI_ANALYSIS_MODEL || "gpt-4o-mini";
+const VOICE = process.env.OPENAI_VOICE || "alloy";
 
 // ── tiny JSON file store (fine for a PoC) ───────────────────────────────────
 function loadCalls() {
-  try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-  } catch {
-    return {};
-  }
+  try { return JSON.parse(fs.readFileSync(DATA_FILE, "utf8")); } catch { return {}; }
 }
-function saveCalls(calls) {
+function saveCalls() {
   fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
   fs.writeFileSync(DATA_FILE, JSON.stringify(calls, null, 2));
 }
-
 const calls = loadCalls();
 
-// ── build the AI assistant for one client ───────────────────────────────────
-function buildSystemPrompt({ name, contact, industry, businessInfo, scriptText }) {
+// ── the agent's instructions for one client ─────────────────────────────────
+function buildInstructions({ name, contact, industry, businessInfo, scriptText }) {
   return [
-    "You are a professional cold-calling sales agent making an outbound call in clear, natural English. Be polite, warm, conversational, and concise — never robotic or pushy.",
+    "You are a professional cold-calling sales agent on an outbound phone call. Speak natural, warm, conversational English. Be polite and concise, never robotic or pushy. Keep your turns short like a real phone conversation.",
     "",
     "About your business:",
     businessInfo || "(no business info provided)",
     "",
-    `You are calling: ${name}${contact ? ` (contact: ${contact})` : ""}${industry ? `, industry: ${industry}` : ""}.`,
+    `You are calling: ${name || "a prospect"}${contact ? ` (contact: ${contact})` : ""}${industry ? `, industry: ${industry}` : ""}.`,
     "",
-    "Use the script below as a loose guide for structure and intent (do NOT read it verbatim, and if any of it is in another language, just convey the intent naturally in English):",
+    "Use the script below as a loose guide for structure and intent — do NOT read it verbatim, and if any of it is not in English just convey the intent naturally in English:",
     "----------------",
     scriptText || "(no script provided — improvise a polite intro, a short pitch, and a meeting request)",
     "----------------",
     "",
-    "Goals:",
-    "1. Introduce yourself politely and ask if it's a good time to talk briefly.",
-    "2. Understand their needs and present the offer succinctly.",
-    "3. If they're interested, propose a specific day and time for a 15-20 minute meeting and confirm it.",
-    "4. If they're not interested, thank them politely and end the call.",
-    "Never be rude, never fabricate information, keep the call short, and respect if they ask not to be called.",
+    "Goals: (1) introduce yourself and ask if it's a good time; (2) understand their need and present the offer briefly; (3) if interested, propose a specific day/time for a 15-20 min meeting and confirm it; (4) if not interested, thank them and end politely.",
+    "Never fabricate facts. Respect requests not to be called. Open the call by greeting them first.",
   ].join("\n");
 }
 
-function buildAssistant(client) {
-  return {
-    name: `CallForge — ${client.name}`,
-    firstMessage:
-      "Hi, how are you today? I was hoping to share something quickly — do you have a couple of minutes?",
-    model: {
-      provider: LLM_PROVIDER,
-      model: LLM_MODEL,
-      messages: [{ role: "system", content: buildSystemPrompt(client) }],
-      temperature: 0.6,
-    },
-    voice: { provider: VOICE_PROVIDER, voiceId: VOICE_ID },
-    transcriber: { provider: STT_PROVIDER, model: STT_MODEL, language: STT_LANGUAGE },
-    // Ask Vapi to summarise + extract structured lead/meeting data after the call.
-    analysisPlan: {
-      summaryPlan: { enabled: true },
-      structuredDataPlan: {
-        enabled: true,
-        schema: {
-          type: "object",
-          properties: {
-            isLead: { type: "boolean", description: "Whether the person is interested and a potential lead" },
-            interestLevel: { type: "string", enum: ["high", "medium", "low", "none"] },
-            meetingRequested: { type: "boolean", description: "Whether they agreed to a meeting" },
-            meetingTime: { type: "string", description: "The confirmed meeting day/time, empty if none" },
-            summary: { type: "string", description: "A short summary of the call" },
-          },
-        },
-      },
-    },
-  };
+// ── post-call analysis with a cheap model ───────────────────────────────────
+async function analyzeTranscript(transcript) {
+  const fallback = { isLead: false, interestLevel: "none", meetingRequested: false, meetingTime: "", summary: "" };
+  if (!transcript.trim() || !OPENAI_API_KEY) return fallback;
+  try {
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify({
+        model: ANALYSIS_MODEL,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "Extract structured outcome from a sales cold-call transcript. Reply ONLY with JSON: {\"isLead\":bool, \"interestLevel\":\"high|medium|low|none\", \"meetingRequested\":bool, \"meetingTime\":string, \"summary\":string}." },
+          { role: "user", content: transcript.slice(0, 12000) },
+        ],
+      }),
+    });
+    const data = await r.json();
+    const parsed = JSON.parse(data.choices?.[0]?.message?.content || "{}");
+    return { ...fallback, ...parsed };
+  } catch {
+    return { ...fallback, summary: "(analysis failed)" };
+  }
 }
 
 const app = express();
@@ -111,86 +96,171 @@ app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, configured: Boolean(VAPI_API_KEY && VAPI_PHONE_NUMBER_ID) });
+  res.json({
+    ok: true,
+    configured: Boolean(OPENAI_API_KEY && TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && TWILIO_FROM_NUMBER && PUBLIC_URL),
+    missing: [
+      !OPENAI_API_KEY && "OPENAI_API_KEY",
+      !TWILIO_ACCOUNT_SID && "TWILIO_ACCOUNT_SID",
+      !TWILIO_AUTH_TOKEN && "TWILIO_AUTH_TOKEN",
+      !TWILIO_FROM_NUMBER && "TWILIO_FROM_NUMBER",
+      !PUBLIC_URL && "PUBLIC_URL",
+    ].filter(Boolean),
+  });
 });
 
-// Start an outbound AI call.
+// Start an outbound AI call via Twilio.
 app.post("/api/ai-call", async (req, res) => {
-  if (!VAPI_API_KEY || !VAPI_PHONE_NUMBER_ID) {
-    return res.status(500).json({ error: "Server missing VAPI_API_KEY / VAPI_PHONE_NUMBER_ID. See server/.env.example." });
-  }
+  const missing = [];
+  if (!OPENAI_API_KEY) missing.push("OPENAI_API_KEY");
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) missing.push("TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN");
+  if (!TWILIO_FROM_NUMBER) missing.push("TWILIO_FROM_NUMBER");
+  if (!PUBLIC_URL) missing.push("PUBLIC_URL");
+  if (missing.length) return res.status(500).json({ error: `Server is missing: ${missing.join(", ")}. See server/.env.example.` });
+
   const { clientId, name, contact, phone, industry, businessInfo, scriptText } = req.body || {};
   const number = String(phone || "").replace(/[^+\d]/g, "");
-  if (!number || number.length < 6) {
-    return res.status(400).json({ error: "Invalid phone number." });
-  }
+  if (!number || number.length < 8) return res.status(400).json({ error: "Invalid phone number (use full international format, e.g. +1...)." });
 
-  const payload = {
-    phoneNumberId: VAPI_PHONE_NUMBER_ID,
-    customer: { number },
-    assistant: buildAssistant({ name, contact, industry, businessInfo, scriptText }),
+  const callId = crypto.randomUUID();
+  calls[callId] = {
+    callId, clientId, name, phone,
+    status: "in-progress", startedAt: new Date().toISOString(),
+    instructions: buildInstructions({ name, contact, industry, businessInfo, scriptText }),
+    transcript: [], result: null,
   };
-  if (PUBLIC_URL) payload.assistant.server = { url: `${PUBLIC_URL}/api/vapi-webhook` };
+  saveCalls();
+
+  const wssUrl = PUBLIC_URL.replace(/^http/, "ws") + "/media-stream";
+  const twiml =
+    `<?xml version="1.0" encoding="UTF-8"?>` +
+    `<Response><Connect><Stream url="${wssUrl}">` +
+    `<Parameter name="callId" value="${callId}"/>` +
+    `</Stream></Connect></Response>`;
 
   try {
-    const r = await fetch("https://api.vapi.ai/call", {
+    const body = new URLSearchParams({ To: number, From: TWILIO_FROM_NUMBER, Twiml: twiml });
+    const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls.json`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${VAPI_API_KEY}` },
-      body: JSON.stringify(payload),
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: "Basic " + Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64"),
+      },
+      body,
     });
     const data = await r.json();
     if (!r.ok) {
-      return res.status(r.status).json({ error: data?.message || "Vapi rejected the call request", details: data });
+      calls[callId].status = "failed";
+      saveCalls();
+      return res.status(r.status).json({ error: data?.message || "Twilio rejected the call", details: data });
     }
-    calls[data.id] = {
-      callId: data.id,
-      clientId,
-      name,
-      phone,
-      status: "in-progress",
-      startedAt: new Date().toISOString(),
-      result: null,
-    };
-    saveCalls(calls);
-    res.json({ callId: data.id, status: "in-progress" });
+    calls[callId].twilioSid = data.sid;
+    saveCalls();
+    res.json({ callId, status: "in-progress" });
   } catch (err) {
-    res.status(502).json({ error: `Could not reach Vapi: ${err.message}` });
+    res.status(502).json({ error: `Could not reach Twilio: ${err.message}` });
   }
 });
 
-// Vapi posts call lifecycle events here. We only care about the end-of-call report.
-app.post("/api/vapi-webhook", (req, res) => {
-  const msg = req.body?.message;
-  if (msg?.type === "end-of-call-report") {
-    const callId = msg.call?.id;
-    const analysis = msg.analysis || {};
-    const structured = analysis.structuredData || {};
-    if (callId && calls[callId]) {
-      calls[callId].status = "completed";
-      calls[callId].endedAt = new Date().toISOString();
-      calls[callId].result = {
-        isLead: Boolean(structured.isLead),
-        interestLevel: structured.interestLevel || "none",
-        meetingRequested: Boolean(structured.meetingRequested),
-        meetingTime: structured.meetingTime || "",
-        summary: structured.summary || analysis.summary || "",
-        transcript: msg.transcript || "",
-        endedReason: msg.endedReason || "",
-      };
-      saveCalls(calls);
-    }
-  }
-  res.json({ received: true });
-});
-
-// Frontend polls this for the outcome of a call.
 app.get("/api/ai-call/:callId", (req, res) => {
   const call = calls[req.params.callId];
   if (!call) return res.status(404).json({ error: "Unknown call id" });
-  res.json(call);
+  const { instructions, ...safe } = call;
+  res.json(safe);
 });
 
-app.listen(PORT, () => {
-  console.log(`CallForge AI-call backend on http://localhost:${PORT}`);
-  if (!VAPI_API_KEY) console.log("⚠  VAPI_API_KEY not set — see server/.env.example");
+// ── websocket bridge: Twilio media stream  <->  OpenAI Realtime ─────────────
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: "/media-stream" });
+
+wss.on("connection", (twilioWs) => {
+  let callId = null;
+  let streamSid = null;
+  let openaiWs = null;
+  let openaiReady = false;
+  const pending = []; // audio that arrives before OpenAI is ready
+
+  function finalize(reason) {
+    const call = callId && calls[callId];
+    if (call && call.status === "in-progress") {
+      call.status = "completed";
+      call.endedAt = new Date().toISOString();
+      const text = call.transcript.map((t) => `${t.role}: ${t.text}`).join("\n");
+      analyzeTranscript(text).then((analysis) => {
+        call.result = { ...analysis, transcript: text, endedReason: reason || "" };
+        saveCalls();
+      });
+    }
+    if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
+  }
+
+  function connectOpenAI() {
+    const call = calls[callId];
+    openaiWs = new WebSocket(`wss://api.openai.com/v1/realtime?model=${REALTIME_MODEL}`, {
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "OpenAI-Beta": "realtime=v1" },
+    });
+
+    openaiWs.on("open", () => {
+      openaiWs.send(JSON.stringify({
+        type: "session.update",
+        session: {
+          modalities: ["text", "audio"],
+          instructions: call?.instructions || "You are a polite sales agent.",
+          voice: VOICE,
+          input_audio_format: "g711_ulaw",
+          output_audio_format: "g711_ulaw",
+          input_audio_transcription: { model: "whisper-1" },
+          turn_detection: { type: "server_vad", silence_duration_ms: 600 },
+        },
+      }));
+      // greet first
+      openaiWs.send(JSON.stringify({ type: "response.create" }));
+      openaiReady = true;
+      while (pending.length) openaiWs.send(pending.shift());
+    });
+
+    openaiWs.on("message", (raw) => {
+      let evt;
+      try { evt = JSON.parse(raw.toString()); } catch { return; }
+      const call = calls[callId];
+      if (evt.type === "response.audio.delta" && evt.delta && streamSid) {
+        twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: evt.delta } }));
+      } else if (evt.type === "input_audio_buffer.speech_started" && streamSid) {
+        // caller barged in — stop our current playback
+        twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
+      } else if (evt.type === "conversation.item.input_audio_transcription.completed" && call) {
+        call.transcript.push({ role: "prospect", text: (evt.transcript || "").trim() });
+      } else if (evt.type === "response.audio_transcript.done" && call) {
+        call.transcript.push({ role: "agent", text: (evt.transcript || "").trim() });
+      }
+    });
+
+    openaiWs.on("error", () => finalize("openai-error"));
+    openaiWs.on("close", () => { openaiReady = false; });
+  }
+
+  twilioWs.on("message", (raw) => {
+    let msg;
+    try { msg = JSON.parse(raw.toString()); } catch { return; }
+    if (msg.event === "start") {
+      streamSid = msg.start.streamSid;
+      callId = msg.start.customParameters?.callId;
+      if (callId && calls[callId]) connectOpenAI();
+    } else if (msg.event === "media") {
+      const append = JSON.stringify({ type: "input_audio_buffer.append", audio: msg.media.payload });
+      if (openaiReady && openaiWs?.readyState === WebSocket.OPEN) openaiWs.send(append);
+      else pending.push(append);
+    } else if (msg.event === "stop") {
+      finalize("twilio-stop");
+    }
+  });
+
+  twilioWs.on("close", () => finalize("twilio-close"));
+});
+
+server.listen(PORT, () => {
+  console.log(`CallForge AI-call backend (Twilio + OpenAI) on http://localhost:${PORT}`);
+  const need = ["OPENAI_API_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "PUBLIC_URL"]
+    .filter((k) => !process.env[k]);
+  if (need.length) console.log(`⚠  Not configured yet — set in server/.env: ${need.join(", ")}`);
 });

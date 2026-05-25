@@ -19,18 +19,35 @@ book a meeting, and writes the outcome (lead status + meeting time + transcript)
 back into the client record. Then the existing **↓ Export** button hands you an
 Excel/CSV with all of it. Built for outbound calling to the US, UK, AU, and NZ.
 
-This needs a small backend (`server/`) plus a voice provider. We use
-[Vapi](https://vapi.ai), which bundles telephony + English speech-to-text/text-to-speech
-+ the LLM, so the backend stays tiny. Free trial credits are enough to test it.
+**Only two services are used: Twilio + OpenAI.** No other voice platform.
+- **Twilio** places the outbound call from your own number and streams the audio.
+- **OpenAI Realtime API** listens, thinks, and speaks (speech-to-speech) over that
+  stream; a cheap `gpt-4o-mini` call afterward extracts the lead/meeting details.
 
-**Using your own Twilio number:** in the Vapi dashboard click *Import Twilio
-Number*, paste your Twilio SID + auth token + number, and Vapi gives you a
-`phoneNumberId` to drop into `server/.env`. The AI then dials out from your
-Twilio number.
+Lowest-cost defaults are used (`gpt-4o-mini-realtime` for the call, `gpt-4o-mini`
+for analysis). Rough cost ≈ Twilio per-minute (varies by country) + OpenAI realtime
+audio minutes.
 
-> ⚠️ **Not yet tested against live telephony.** The code path is complete, but a
-> real call needs your own Vapi/Twilio account + number, and you should validate
-> voice quality on a test call before relying on it.
+### Setup
+
+```bash
+npm install
+cp server/.env.example server/.env   # fill in OpenAI + Twilio keys
+ngrok http 8787                       # gives a public https URL for Twilio
+# put that https URL into PUBLIC_URL in server/.env
+npm run server                        # AI-call backend on :8787
+npm run dev                           # frontend (separate terminal)
+```
+
+**Where do the API keys go?** All in `server/.env` (never in the browser):
+`OPENAI_API_KEY`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`,
+and `PUBLIC_URL`. Hit `http://localhost:8787/api/health` to see what's still missing.
+
+The frontend talks to `http://localhost:8787` by default; override with `VITE_API_URL`.
+
+> ⚠️ **Not yet tested against live telephony.** The full Twilio↔OpenAI bridge is
+> implemented, but a real call needs your own Twilio number + OpenAI key, and you
+> should validate it on a test call first.
 >
 > ⚠️ **Compliance:** automated/AI cold calls to the US, UK, AU, and NZ are
 > regulated (e.g. TCPA, AI-disclosure and do-not-call rules). Confirm consent
@@ -56,7 +73,7 @@ The frontend talks to `http://localhost:8787` by default; override with
 
 - React 18 + Vite
 - Anthropic Claude API (claude-sonnet-4-20250514)
-- Core app needs no backend; AI auto-calling adds an optional Node/Express + Vapi backend
+- Core app needs no backend; AI auto-calling adds an optional Node/Express backend (Twilio + OpenAI Realtime)
 
 ## Getting Started
 
