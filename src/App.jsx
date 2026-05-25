@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
 const ACCENT = "#00FF94";
 const BG = "#0A0A0F";
@@ -6,254 +6,456 @@ const CARD = "#12121A";
 const BORDER = "#1E1E2E";
 const MUTED = "#4A4A6A";
 const TEXT = "#E8E8F0";
+const WARN = "#FFB800";
+const DANGER = "#FF4444";
+const INFO = "#7B8FFF";
 
-const styles = {
-  app: {
-    minHeight: "100vh",
-    background: BG,
-    color: TEXT,
-    fontFamily: "'DM Mono', 'Courier New', monospace",
-    padding: "0",
+const DEFAULT_BUSINESS = `Business: SoftPulse Agency
+Service: Digital Marketing & Web Development
+Offer: Free website audit + 1 month free social media management
+Target: SME businesses in Bangladesh`;
+
+const SAMPLE_CLIENTS = [
+  { id: 1, name: "Rahim Telecom", contact: "Mr. Rahim", phone: "01711-234567", industry: "Telecom", notes: "", status: "new", script: null },
+  { id: 2, name: "Dhaka Logistics Ltd", contact: "Ms. Nadia", phone: "01812-345678", industry: "Logistics", notes: "", status: "new", script: null },
+  { id: 3, name: "GreenTech BD", contact: "Mr. Karim", phone: "01955-456789", industry: "Technology", notes: "", status: "new", script: null },
+];
+
+// ── Industry-specific script content ──────────────────────────────────────────
+const INDUSTRY_MAP = {
+  telecom: {
+    pain: "customer acquisition cost বৃদ্ধি এবং market competition",
+    benefit: "নতুন customer আনতে ও existing customer retain করতে",
+    objection: "আমাদের নিজস্ব marketing team আছে",
+    objReply: "অবশ্যই! আমরা আপনার team-কে replace করতে আসিনি — বরং তাদের efforts amplify করতে এসেছি। একসাথে কাজ করলে results অনেক ভালো আসে।",
   },
-  header: {
-    borderBottom: `1px solid ${BORDER}`,
-    padding: "20px 32px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    background: CARD,
+  logistics: {
+    pain: "delivery efficiency এবং real-time tracking-এর চ্যালেঞ্জ",
+    benefit: "delivery cost কমাতে ও customer satisfaction বাড়াতে",
+    objection: "আমাদের budget এখন tight",
+    objReply: "আমি বুঝতে পারছি। তাই আমরা প্রথমে একটি free audit offer করছি — কোনো cost ছাড়াই দেখুন কোথায় সুযোগ আছে।",
   },
-  logo: {
-    fontSize: "18px",
-    fontWeight: "700",
-    letterSpacing: "0.1em",
-    color: ACCENT,
-    textTransform: "uppercase",
+  technology: {
+    pain: "digital presence এবং qualified lead generation-এর সমস্যা",
+    benefit: "online visibility বাড়াতে ও qualified leads পেতে",
+    objection: "আমরা ইতিমধ্যে digital marketing করছি",
+    objReply: "দারুণ! তাহলে আমরা আপনার current strategy review করে দেখাতে পারি কোথায় ROI আরো বাড়ানো যায়।",
   },
-  badge: {
-    background: `${ACCENT}22`,
-    color: ACCENT,
-    border: `1px solid ${ACCENT}44`,
-    borderRadius: "4px",
-    padding: "4px 10px",
-    fontSize: "11px",
-    letterSpacing: "0.08em",
+  healthcare: {
+    pain: "patient acquisition এবং appointment management",
+    benefit: "নতুন patient পেতে ও appointment rate বাড়াতে",
+    objection: "Healthcare-এ digital marketing কাজ করে না",
+    objReply: "আসলে healthcare sector-এ digital marketing সবচেয়ে দ্রুত বাড়ছে। আমাদের healthcare clients গড়ে ৪০% বেশি appointment পাচ্ছেন।",
   },
-  main: {
-    display: "grid",
-    gridTemplateColumns: "320px 1fr",
-    height: "calc(100vh - 61px)",
-    overflow: "hidden",
+  education: {
+    pain: "student enrollment কমা এবং brand awareness-এর ঘাটতি",
+    benefit: "enrollment বাড়াতে ও শক্তিশালী brand তৈরি করতে",
+    objection: "Students আমাদের খুঁজে নেয়",
+    objReply: "সত্যি কথা! কিন্তু competition বাড়ছে। সঠিক digital strategy থাকলে আরো বেশি students reach করা সম্ভব।",
   },
-  sidebar: {
-    borderRight: `1px solid ${BORDER}`,
-    display: "flex",
-    flexDirection: "column",
-    overflow: "hidden",
-    background: CARD,
+  finance: {
+    pain: "client trust building এবং new lead generation",
+    benefit: "নতুন clients পেতে ও brand credibility বাড়াতে",
+    objection: "Finance sector-এ compliance issue আছে",
+    objReply: "আমরা finance sector compliance সম্পর্কে পুরোপুরি aware। আমাদের সব strategy নিয়মকানুন মেনে তৈরি করা হয়।",
   },
-  sidebarSection: {
-    padding: "20px",
-    borderBottom: `1px solid ${BORDER}`,
+  retail: {
+    pain: "foot traffic কমা এবং online sales growth-এর চ্যালেঞ্জ",
+    benefit: "customer base বাড়াতে ও repeat purchase বাড়াতে",
+    objection: "আমাদের business seasonal",
+    objReply: "Seasonal business-এর জন্য আমাদের কাছে বিশেষ strategy আছে — peak season maximize করা এবং off-season-এও revenue maintain করা।",
   },
-  sectionLabel: {
-    fontSize: "10px",
-    letterSpacing: "0.15em",
-    color: MUTED,
-    textTransform: "uppercase",
-    marginBottom: "12px",
+  manufacturing: {
+    pain: "B2B client acquisition এবং market expansion",
+    benefit: "নতুন buyers পেতে ও market expand করতে",
+    objection: "আমরা word-of-mouth-এ চলি",
+    objReply: "Word-of-mouth excellent! Digital presence থাকলে সেটা আরো amplify হয় — international buyers আপনাদের আরো সহজে খুঁজে পাবেন।",
   },
-  textarea: {
-    width: "100%",
-    background: BG,
-    border: `1px solid ${BORDER}`,
-    borderRadius: "6px",
-    color: TEXT,
-    fontFamily: "inherit",
-    fontSize: "12px",
-    padding: "10px",
-    resize: "none",
-    outline: "none",
-    lineHeight: "1.6",
-    boxSizing: "border-box",
+  realestate: {
+    pain: "property listing visibility এবং qualified buyer পাওয়া",
+    benefit: "property দ্রুত sell/rent করতে ও premium buyers পেতে",
+    objection: "আমরা portal-এ listed আছি",
+    objReply: "Portal listing ভালো, কিন্তু targeted social media ও SEO দিয়ে আরো qualified buyer reach করা যায়।",
   },
-  uploadBtn: {
-    width: "100%",
-    padding: "10px",
-    background: "transparent",
-    border: `1px dashed ${MUTED}`,
-    borderRadius: "6px",
-    color: MUTED,
-    fontFamily: "inherit",
-    fontSize: "12px",
-    cursor: "pointer",
-    transition: "all 0.2s",
-    letterSpacing: "0.05em",
+  food: {
+    pain: "customer loyalty ধরে রাখা এবং online order growth",
+    benefit: "regular customers ধরে রাখতে ও delivery order বাড়াতে",
+    objection: "আমরা Pathao/Shohoz-এ আছি",
+    objReply: "Third-party platform ভালো, কিন্তু নিজস্ব digital presence থাকলে commission দিতে হয় না ও direct customer relationship তৈরি হয়।",
   },
-  clientList: {
-    flex: 1,
-    overflowY: "auto",
-    padding: "12px",
-  },
-  clientCard: (active, status) => ({
-    padding: "12px",
-    borderRadius: "6px",
-    border: `1px solid ${active ? ACCENT : BORDER}`,
-    marginBottom: "8px",
-    cursor: "pointer",
-    background: active ? `${ACCENT}11` : "transparent",
-    transition: "all 0.15s",
-  }),
-  clientName: {
-    fontSize: "13px",
-    fontWeight: "600",
-    color: TEXT,
-    marginBottom: "3px",
-  },
-  clientMeta: {
-    fontSize: "11px",
-    color: MUTED,
-  },
-  statusDot: (status) => ({
-    display: "inline-block",
-    width: "6px",
-    height: "6px",
-    borderRadius: "50%",
-    marginRight: "6px",
-    background:
-      status === "converted"
-        ? "#00FF94"
-        : status === "follow-up"
-        ? "#FFB800"
-        : status === "not-interested"
-        ? "#FF4444"
-        : "#4A4A6A",
-  }),
-  content: {
-    display: "flex",
-    flexDirection: "column",
-    overflow: "hidden",
-    background: BG,
-  },
-  contentHeader: {
-    padding: "20px 28px",
-    borderBottom: `1px solid ${BORDER}`,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    flexShrink: 0,
-  },
-  phoneDisplay: {
-    fontSize: "22px",
-    letterSpacing: "0.08em",
-    color: ACCENT,
-    fontWeight: "700",
-  },
-  callBtn: (calling) => ({
-    padding: "10px 24px",
-    background: calling ? "#FF4444" : ACCENT,
-    border: "none",
-    borderRadius: "6px",
-    color: calling ? "#fff" : "#000",
-    fontFamily: "inherit",
-    fontSize: "13px",
-    fontWeight: "700",
-    cursor: "pointer",
-    letterSpacing: "0.08em",
-    transition: "all 0.2s",
-  }),
-  scriptArea: {
-    flex: 1,
-    overflowY: "auto",
-    padding: "24px 28px",
-  },
-  scriptBlock: {
-    background: CARD,
-    border: `1px solid ${BORDER}`,
-    borderRadius: "8px",
-    padding: "20px",
-    marginBottom: "16px",
-  },
-  scriptLabel: {
-    fontSize: "10px",
-    letterSpacing: "0.15em",
-    color: MUTED,
-    textTransform: "uppercase",
-    marginBottom: "10px",
-  },
-  scriptText: {
-    fontSize: "13px",
-    lineHeight: "1.8",
-    color: TEXT,
-    whiteSpace: "pre-wrap",
-  },
-  bottomBar: {
-    borderTop: `1px solid ${BORDER}`,
-    padding: "16px 28px",
-    display: "flex",
-    gap: "12px",
-    flexShrink: 0,
-    background: CARD,
-  },
-  noteInput: {
-    flex: 1,
-    background: BG,
-    border: `1px solid ${BORDER}`,
-    borderRadius: "6px",
-    color: TEXT,
-    fontFamily: "inherit",
-    fontSize: "12px",
-    padding: "10px 14px",
-    outline: "none",
-  },
-  statusBtns: {
-    display: "flex",
-    gap: "8px",
-  },
-  statusBtn: (color, active) => ({
-    padding: "8px 14px",
-    background: active ? `${color}22` : "transparent",
-    border: `1px solid ${active ? color : BORDER}`,
-    borderRadius: "6px",
-    color: active ? color : MUTED,
-    fontFamily: "inherit",
-    fontSize: "11px",
-    cursor: "pointer",
-    letterSpacing: "0.05em",
-    transition: "all 0.15s",
-  }),
-  emptyState: {
-    flex: 1,
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    color: MUTED,
-    gap: "12px",
-  },
-  generateBtn: {
-    padding: "10px 20px",
-    background: `${ACCENT}22`,
-    border: `1px solid ${ACCENT}44`,
-    borderRadius: "6px",
-    color: ACCENT,
-    fontFamily: "inherit",
-    fontSize: "12px",
-    cursor: "pointer",
-    letterSpacing: "0.05em",
-    transition: "all 0.2s",
-  },
-  spinner: {
-    display: "inline-block",
-    width: "12px",
-    height: "12px",
-    border: `2px solid ${ACCENT}33`,
-    borderTop: `2px solid ${ACCENT}`,
-    borderRadius: "50%",
-    animation: "spin 0.8s linear infinite",
-    marginRight: "8px",
-  },
-  input: {
+};
+
+function getIndustryData(industry) {
+  if (!industry) return null;
+  const key = industry.toLowerCase().replace(/[\s\-_]/g, "");
+  for (const [k, v] of Object.entries(INDUSTRY_MAP)) {
+    if (key.includes(k) || k.includes(key.substring(0, Math.min(key.length, 5)))) return v;
+  }
+  return null;
+}
+
+function parseBusinessInfo(text) {
+  const info = { name: "আমাদের কোম্পানি", service: "আমাদের সার্ভিস", offer: "বিশেষ প্রস্তাব", target: "SME businesses" };
+  text.split("\n").forEach((line) => {
+    const colonIdx = line.indexOf(":");
+    if (colonIdx === -1) return;
+    const key = line.slice(0, colonIdx).trim().toLowerCase();
+    const val = line.slice(colonIdx + 1).trim();
+    if (!val) return;
+    if (key.includes("business") || key.includes("company") || key.includes("name")) info.name = val;
+    else if (key.includes("service") || key.includes("product")) info.service = val;
+    else if (key.includes("offer")) info.offer = val;
+    else if (key.includes("target")) info.target = val;
+  });
+  return info;
+}
+
+// ── Template-based Bangla script generator (no API required) ─────────────────
+function generateScript(client, businessInfoText) {
+  const biz = parseBusinessInfo(businessInfoText);
+  const ind = getIndustryData(client.industry) || {
+    pain: "business growth এবং market expansion",
+    benefit: "নতুন clients পেতে ও revenue বাড়াতে",
+    objection: "এখন সময় নেই",
+    objReply: "অবশ্যই! তাহলে কি আগামী সপ্তাহে একটি convenient সময়ে কথা বলতে পারি?",
+  };
+  const contact = client.contact || "স্যার/ম্যাম";
+  const company = client.name;
+  const industry = client.industry || "business";
+
+  return {
+    OPENING:
+`আস্সালামু আলাইকুম / নমস্কার।
+
+আমি ${biz.name} থেকে বলছি। আপনি কি ${contact} বলছেন?
+
+(হ্যাঁ বললে)
+${contact}, আমি জানি আপনি অনেক ব্যস্ত। মাত্র ২ মিনিট সময় দিলে একটি গুরুত্বপূর্ণ বিষয় শেয়ার করতে চাই — আপনি কি এখন কথা বলতে পারবেন?`,
+
+    HOOK:
+`${company}-এর মতো ${industry} company গুলো প্রায়ই ${ind.pain}-এর challenge face করে।
+
+আমরা এই ধরনের অনেক company-কে সাহায্য করেছি এবং তারা উল্লেখযোগ্য results পেয়েছেন।
+
+আপনারাও কি এই বিষয়গুলো নিয়ে কাজ করছেন?`,
+
+    PITCH:
+`আমরা ${biz.service} provide করি, যা ${ind.benefit} সাহায্য করে।
+
+${company}-এর জন্য আমরা বিশেষভাবে offer করছি:
+  ✦ ${biz.offer}
+
+এটি একটি risk-free সুযোগ। প্রথমে দেখুন, তারপর সিদ্ধান্ত নিন।
+আমাদের clients সাধারণত ৩–৬ মাসের মধ্যে উল্লেখযোগ্য পরিবর্তন অনুভব করেন।`,
+
+    "OBJECTION HANDLING":
+`Objection ও Response Guide:
+
+❶ যদি বলেন: "${ind.objection}"
+   → ${ind.objReply}
+
+❷ যদি বলেন: "আমাদের budget নেই"
+   → "আমি বুঝতে পারছি। তাই আমরা flexible payment option রেখেছি। আর ${biz.offer} — এটা risk ছাড়াই শুরু করার সুযোগ দেয়।"
+
+❸ যদি বলেন: "পরে call করুন"
+   → "অবশ্যই! কবে call করলে আপনার সুবিধা হবে? আগামী সপ্তাহে Tuesday বা Wednesday কেমন?"
+
+❹ যদি বলেন: "আমি জানি না, দেখি"
+   → "একদম ঠিক আছে। একটি ছোট meeting-এ সব details দেখলে সিদ্ধান্ত নেওয়া সহজ হবে — মাত্র ১৫ মিনিট।"`,
+
+    "MEETING CLOSE":
+`${contact}, আপনার সাথে কথা বলে অনেক ভালো লাগলো।
+
+আপনার সুবিধামতো সময়ে একটি ছোট ১৫–২০ মিনিটের meeting করতে পারি?
+সেখানে আমরা ${company}-এর specific situation অনুযায়ী একটি customized plan present করব।
+
+এই সপ্তাহে বা আগামী সপ্তাহে — কোন দিন এবং সময় আপনার জন্য সুবিধাজনক?
+(Phone / Zoom / সরাসরি — যেটা আপনার জন্য ভালো)`,
+
+    CLOSING:
+`অনেক ধন্যবাদ আপনার মূল্যবান সময়ের জন্য।
+
+Meeting confirm হলে আমি [তারিখ ও সময়]-এ একটি reminder পাঠাব।
+
+আমার contact: [আপনার নম্বর]
+যেকোনো প্রশ্নে সরাসরি call করতে পারেন।
+
+আপনার একটি সুন্দর দিন হোক।
+আস্সালামু আলাইকুম।`,
+  };
+}
+
+// ── Improved CSV parser (handles quoted fields with commas) ───────────────────
+function parseCSVLine(line) {
+  const fields = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === '"') {
+      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+      else inQuotes = !inQuotes;
+    } else if (line[i] === "," && !inQuotes) {
+      fields.push(current.trim());
+      current = "";
+    } else {
+      current += line[i];
+    }
+  }
+  fields.push(current.trim());
+  return fields;
+}
+
+function parseCSV(text) {
+  const lines = text.trim().split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) return { clients: [], error: "CSV must have at least a header row and one data row." };
+  const headers = parseCSVLine(lines[0]).map((h) => h.toLowerCase().replace(/"/g, ""));
+  const clients = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = parseCSVLine(lines[i]);
+    const obj = { id: Date.now() + i, status: "new", notes: "", script: null };
+    headers.forEach((h, idx) => {
+      if (h.includes("name") || h.includes("company")) obj.name = vals[idx] || "";
+      else if (h.includes("contact") || h.includes("person")) obj.contact = vals[idx] || "";
+      else if (h.includes("phone") || h.includes("number") || h.includes("mobile")) obj.phone = vals[idx] || "";
+      else if (h.includes("industry") || h.includes("sector")) obj.industry = vals[idx] || "";
+    });
+    if (!obj.name) obj.name = vals[0] || `Client ${i}`;
+    if (!obj.phone) obj.phone = vals.find((v) => /\d{7,}/.test(v)) || "N/A";
+    clients.push(obj);
+  }
+  return { clients, error: null };
+}
+
+// ── LocalStorage helpers ──────────────────────────────────────────────────────
+function loadState(key, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    return v !== null ? JSON.parse(v) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveState(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* quota exceeded — ignore */ }
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function formatTime(s) {
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function statusColor(status) {
+  return status === "converted" ? ACCENT : status === "follow-up" ? WARN : status === "not-interested" ? DANGER : MUTED;
+}
+
+function statusLabel(status) {
+  return status === "converted" ? "Lead" : status === "follow-up" ? "Follow-up" : status === "not-interested" ? "Declined" : "New";
+}
+
+// ── Toast component ───────────────────────────────────────────────────────────
+function ToastList({ toasts }) {
+  if (!toasts.length) return null;
+  return (
+    <div style={{ position: "fixed", bottom: "24px", right: "24px", zIndex: 1000, display: "flex", flexDirection: "column", gap: "8px" }}>
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          style={{
+            padding: "10px 16px",
+            borderRadius: "6px",
+            fontSize: "12px",
+            fontFamily: "'DM Mono', monospace",
+            background: t.type === "error" ? `${DANGER}22` : t.type === "warn" ? `${WARN}22` : `${ACCENT}22`,
+            border: `1px solid ${t.type === "error" ? DANGER : t.type === "warn" ? WARN : ACCENT}66`,
+            color: t.type === "error" ? DANGER : t.type === "warn" ? WARN : ACCENT,
+            maxWidth: "300px",
+            animation: "slideIn 0.2s ease",
+          }}
+        >
+          {t.type === "error" ? "✗ " : t.type === "warn" ? "⚠ " : "✓ "}{t.msg}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Main App ──────────────────────────────────────────────────────────────────
+export default function App() {
+  const [clients, setClients] = useState(() => loadState("cf_clients", SAMPLE_CLIENTS));
+  const [selected, setSelected] = useState(null);
+  const [businessInfo, setBusinessInfo] = useState(() => loadState("cf_business", DEFAULT_BUSINESS));
+  const [loading, setLoading] = useState(false);
+  const [noteInput, setNoteInput] = useState("");
+  const [calling, setCalling] = useState(false);
+  const [callTime, setCallTime] = useState(0);
+  const [toasts, setToasts] = useState([]);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newClient, setNewClient] = useState({ name: "", contact: "", phone: "", industry: "" });
+  const [search, setSearch] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const fileRef = useRef();
+  const timerRef = useRef();
+
+  const selectedClient = clients.find((c) => c.id === selected);
+
+  // Persist data
+  useEffect(() => { saveState("cf_clients", clients); }, [clients]);
+  useEffect(() => { saveState("cf_business", businessInfo); }, [businessInfo]);
+
+  // Call timer
+  useEffect(() => {
+    if (calling) {
+      setCallTime(0);
+      timerRef.current = setInterval(() => setCallTime((t) => t + 1), 1000);
+    } else {
+      clearInterval(timerRef.current);
+    }
+    return () => clearInterval(timerRef.current);
+  }, [calling]);
+
+  // End call when switching clients
+  useEffect(() => { setCalling(false); setNoteInput(""); }, [selected]);
+
+  function toast(msg, type = "success") {
+    const id = Date.now() + Math.random();
+    setToasts((prev) => [...prev, { id, msg, type }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3500);
+  }
+
+  function handleFileUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!file.name.match(/\.(csv|txt)$/i)) {
+      toast("Please upload a .csv or .txt file", "error");
+      e.target.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const { clients: parsed, error } = parseCSV(ev.target.result);
+      if (error) toast(error, "error");
+      else if (parsed.length === 0) toast("No clients found in the file", "warn");
+      else {
+        setClients((prev) => [...prev, ...parsed]);
+        toast(`${parsed.length} client${parsed.length > 1 ? "s" : ""} imported`);
+      }
+    };
+    reader.onerror = () => toast("Failed to read file", "error");
+    reader.readAsText(file);
+    e.target.value = "";
+  }
+
+  function handleGenerateScript() {
+    if (!selectedClient || !businessInfo.trim()) {
+      toast("Fill in your business info first", "warn");
+      return;
+    }
+    setLoading(true);
+    // Small delay so the spinner renders before the sync work
+    setTimeout(() => {
+      try {
+        const script = generateScript(selectedClient, businessInfo);
+        setClients((prev) => prev.map((c) => (c.id === selected ? { ...c, script } : c)));
+        toast("Script generated");
+      } catch {
+        toast("Script generation failed — please try again", "error");
+      }
+      setLoading(false);
+    }, 600);
+  }
+
+  function saveNote() {
+    if (!noteInput.trim() || !selected) return;
+    const ts = new Date().toLocaleString("en-BD", { dateStyle: "short", timeStyle: "short" });
+    const entry = `[${ts}] ${noteInput.trim()}`;
+    setClients((prev) =>
+      prev.map((c) => (c.id === selected ? { ...c, notes: c.notes ? c.notes + "\n" + entry : entry } : c))
+    );
+    setNoteInput("");
+    toast("Note saved");
+  }
+
+  function setStatus(status) {
+    if (!selected) return;
+    setClients((prev) => prev.map((c) => (c.id === selected ? { ...c, status } : c)));
+    toast(`Marked as ${statusLabel(status)}`);
+  }
+
+  function addClient() {
+    if (!newClient.name.trim()) { toast("Client name is required", "error"); return; }
+    const client = {
+      id: Date.now(),
+      status: "new",
+      notes: "",
+      script: null,
+      name: newClient.name.trim(),
+      contact: newClient.contact.trim(),
+      phone: newClient.phone.trim() || "N/A",
+      industry: newClient.industry.trim(),
+    };
+    setClients((prev) => [...prev, client]);
+    setNewClient({ name: "", contact: "", phone: "", industry: "" });
+    setShowAddForm(false);
+    toast(`${client.name} added`);
+  }
+
+  function deleteClient(id) {
+    const c = clients.find((cl) => cl.id === id);
+    setClients((prev) => prev.filter((cl) => cl.id !== id));
+    if (selected === id) setSelected(null);
+    setConfirmDeleteId(null);
+    toast(`${c?.name} deleted`);
+  }
+
+  function clearAllNotes() {
+    if (!selected) return;
+    setClients((prev) => prev.map((c) => (c.id === selected ? { ...c, notes: "" } : c)));
+    toast("Notes cleared");
+  }
+
+  function exportCSV() {
+    const headers = ["Name", "Contact", "Phone", "Industry", "Status", "Notes"];
+    const rows = clients.map((c) =>
+      [
+        `"${(c.name || "").replace(/"/g, '""')}"`,
+        `"${(c.contact || "").replace(/"/g, '""')}"`,
+        `"${(c.phone || "").replace(/"/g, '""')}"`,
+        `"${(c.industry || "").replace(/"/g, '""')}"`,
+        `"${c.status}"`,
+        `"${(c.notes || "").replace(/"/g, '""').replace(/\n/g, " | ")}"`,
+      ].join(",")
+    );
+    const csv = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `callforge-${new Date().toISOString().split("T")[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast("Data exported");
+  }
+
+  const filteredClients = clients.filter(
+    (c) =>
+      !search ||
+      c.name?.toLowerCase().includes(search.toLowerCase()) ||
+      c.contact?.toLowerCase().includes(search.toLowerCase()) ||
+      c.industry?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const stats = {
+    total: clients.length,
+    converted: clients.filter((c) => c.status === "converted").length,
+    followUp: clients.filter((c) => c.status === "follow-up").length,
+    notInterested: clients.filter((c) => c.status === "not-interested").length,
+  };
+
+  const script = selectedClient?.script;
+
+  // ── Input style helper ────────────────────────────────────────────────────
+  const inp = {
     width: "100%",
     background: BG,
     border: `1px solid ${BORDER}`,
@@ -263,218 +465,178 @@ const styles = {
     fontSize: "12px",
     padding: "8px 10px",
     outline: "none",
-    marginBottom: "8px",
     boxSizing: "border-box",
-  },
-  tag: (color) => ({
-    display: "inline-block",
-    padding: "2px 8px",
-    borderRadius: "3px",
-    fontSize: "10px",
-    background: `${color}22`,
-    color: color,
-    border: `1px solid ${color}44`,
-    marginLeft: "8px",
-    letterSpacing: "0.05em",
-  }),
-};
-
-const SAMPLE_CLIENTS = [
-  { id: 1, name: "Rahim Telecom", contact: "Mr. Rahim", phone: "01711-234567", industry: "Telecom", notes: "", status: "new" },
-  { id: 2, name: "Dhaka Logistics Ltd", contact: "Ms. Nadia", phone: "01812-345678", industry: "Logistics", notes: "", status: "new" },
-  { id: 3, name: "GreenTech BD", contact: "Mr. Karim", phone: "01955-456789", industry: "Technology", notes: "", status: "new" },
-];
-
-function parseCSV(text) {
-  const lines = text.trim().split("\n");
-  if (lines.length < 2) return [];
-  const headers = lines[0].split(",").map((h) => h.trim().toLowerCase().replace(/"/g, ""));
-  return lines.slice(1).map((line, i) => {
-    const vals = line.split(",").map((v) => v.trim().replace(/"/g, ""));
-    const obj = { id: Date.now() + i, status: "new", notes: "" };
-    headers.forEach((h, idx) => {
-      if (h.includes("name") || h.includes("company")) obj.name = vals[idx] || "";
-      else if (h.includes("contact") || h.includes("person")) obj.contact = vals[idx] || "";
-      else if (h.includes("phone") || h.includes("number") || h.includes("mobile")) obj.phone = vals[idx] || "";
-      else if (h.includes("industry") || h.includes("sector")) obj.industry = vals[idx] || "";
-      else obj[h] = vals[idx] || "";
-    });
-    if (!obj.name) obj.name = vals[0] || `Client ${i + 1}`;
-    if (!obj.phone) obj.phone = vals.find((v) => /\d{7,}/.test(v)) || "N/A";
-    return obj;
-  });
-}
-
-export default function App() {
-  const [clients, setClients] = useState(SAMPLE_CLIENTS);
-  const [selected, setSelected] = useState(null);
-  const [businessInfo, setBusinessInfo] = useState(
-    "Business: SoftPulse Agency\nService: Digital Marketing & Web Development\nOffer: Free website audit + 1 month free social media management\nTarget: SME businesses in Bangladesh"
-  );
-  const [script, setScript] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [noteInput, setNoteInput] = useState("");
-  const [calling, setCalling] = useState(false);
-  const fileRef = useRef();
-
-  const selectedClient = clients.find((c) => c.id === selected);
-
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const parsed = parseCSV(ev.target.result);
-      if (parsed.length > 0) setClients((prev) => [...prev, ...parsed]);
-    };
-    reader.readAsText(file);
-  };
-
-  const generateScript = async () => {
-    if (!selectedClient || !businessInfo) return;
-    setLoading(true);
-    setScript(null);
-    try {
-      const prompt = `You are a professional cold calling assistant in Bangladesh. Generate a structured cold call script in Bangla (mixed with some English where natural) for the following scenario:
-
-BUSINESS INFO:
-${businessInfo}
-
-CLIENT INFO:
-Company: ${selectedClient.name}
-Contact Person: ${selectedClient.contact || "Decision Maker"}
-Phone: ${selectedClient.phone}
-Industry: ${selectedClient.industry || "Business"}
-
-Generate a cold call script with these sections:
-1. OPENING (greeting and introduction - 2-3 sentences)
-2. HOOK (pain point or value proposition - 2-3 sentences)
-3. PITCH (what you offer - 3-4 sentences)
-4. OBJECTION HANDLING (2-3 common objections with responses)
-5. MEETING CLOSE (ask for a meeting - 2-3 sentences)
-6. CLOSING (wrap up professionally)
-
-Keep it natural, conversational, and persuasive. Use "আপনি" for respect. Make it specific to their industry.`;
-
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
-      const data = await response.json();
-      const text = data.content?.map((b) => b.text || "").join("") || "Script generation failed.";
-
-      const sections = {};
-      const sectionNames = ["OPENING", "HOOK", "PITCH", "OBJECTION HANDLING", "MEETING CLOSE", "CLOSING"];
-      sectionNames.forEach((name, i) => {
-        const regex = new RegExp(`${i + 1}\\.\\s*${name}[:\\s]*(.*?)(?=${i + 2}\\.|$)`, "is");
-        const match = text.match(regex);
-        sections[name] = match ? match[1].trim() : "";
-      });
-
-      if (Object.values(sections).every((v) => !v)) {
-        sections["FULL SCRIPT"] = text;
-      }
-      setScript(sections);
-    } catch (err) {
-      setScript({ ERROR: "Failed to generate script. Please try again." });
-    }
-    setLoading(false);
-  };
-
-  const saveNote = () => {
-    if (!noteInput.trim() || !selected) return;
-    setClients((prev) =>
-      prev.map((c) =>
-        c.id === selected ? { ...c, notes: c.notes ? c.notes + "\n" + noteInput : noteInput } : c
-      )
-    );
-    setNoteInput("");
-  };
-
-  const setStatus = (status) => {
-    if (!selected) return;
-    setClients((prev) => prev.map((c) => (c.id === selected ? { ...c, status } : c)));
-  };
-
-  const stats = {
-    total: clients.length,
-    converted: clients.filter((c) => c.status === "converted").length,
-    followUp: clients.filter((c) => c.status === "follow-up").length,
-    notInterested: clients.filter((c) => c.status === "not-interested").length,
   };
 
   return (
-    <div style={styles.app}>
+    <div style={{ minHeight: "100vh", background: BG, color: TEXT, fontFamily: "'DM Mono', 'Courier New', monospace", display: "flex", flexDirection: "column" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        ::-webkit-scrollbar { width: 4px; } 
+        ::-webkit-scrollbar { width: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: ${BORDER}; border-radius: 2px; }
         @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
+        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+        @keyframes slideIn { from { transform: translateX(20px); opacity:0; } to { transform:none; opacity:1; } }
+        button:hover { opacity: 0.85; }
+        button:active { opacity: 0.7; }
+        input::placeholder, textarea::placeholder { color: ${MUTED}; }
       `}</style>
 
-      <div style={styles.header}>
-        <div style={styles.logo}>⬡ CALLFORGE</div>
-        <div style={{ display: "flex", gap: "20px", fontSize: "12px", color: MUTED }}>
-          <span>Total: <span style={{ color: TEXT }}>{stats.total}</span></span>
-          <span>Leads: <span style={{ color: ACCENT }}>{stats.converted}</span></span>
-          <span>Follow-up: <span style={{ color: "#FFB800" }}>{stats.followUp}</span></span>
-          <span>Declined: <span style={{ color: "#FF4444" }}>{stats.notInterested}</span></span>
+      <ToastList toasts={toasts} />
+
+      {/* ── Header ── */}
+      <div style={{ borderBottom: `1px solid ${BORDER}`, padding: "16px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", background: CARD, flexShrink: 0 }}>
+        <div style={{ fontSize: "16px", fontWeight: "700", letterSpacing: "0.12em", color: ACCENT }}>⬡ CALLFORGE</div>
+        <div style={{ display: "flex", gap: "20px", fontSize: "11px", color: MUTED }}>
+          <span>Total <span style={{ color: TEXT }}>{stats.total}</span></span>
+          <span>Leads <span style={{ color: ACCENT }}>{stats.converted}</span></span>
+          <span>Follow-up <span style={{ color: WARN }}>{stats.followUp}</span></span>
+          <span>Declined <span style={{ color: DANGER }}>{stats.notInterested}</span></span>
         </div>
-        <div style={styles.badge}>AI POWERED</div>
+        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+          <button onClick={exportCSV} style={{ background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "5px", color: MUTED, padding: "5px 12px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>
+            ↓ Export
+          </button>
+          <div style={{ background: `${ACCENT}22`, color: ACCENT, border: `1px solid ${ACCENT}44`, borderRadius: "4px", padding: "4px 10px", fontSize: "10px", letterSpacing: "0.08em" }}>
+            TEMPLATE ENGINE
+          </div>
+        </div>
       </div>
 
-      <div style={styles.main}>
-        {/* SIDEBAR */}
-        <div style={styles.sidebar}>
-          <div style={styles.sidebarSection}>
-            <div style={styles.sectionLabel}>Your Business</div>
+      {/* ── Body ── */}
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+
+        {/* ── Sidebar ── */}
+        <div style={{ width: "300px", flexShrink: 0, borderRight: `1px solid ${BORDER}`, display: "flex", flexDirection: "column", overflow: "hidden", background: CARD }}>
+
+          {/* Business info */}
+          <div style={{ padding: "16px", borderBottom: `1px solid ${BORDER}` }}>
+            <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: MUTED, textTransform: "uppercase", marginBottom: "8px" }}>Your Business</div>
             <textarea
-              style={{ ...styles.textarea, height: "120px" }}
+              style={{ ...inp, height: "110px", resize: "none", lineHeight: "1.7" }}
               value={businessInfo}
               onChange={(e) => setBusinessInfo(e.target.value)}
-              placeholder="Business name, services, offer..."
+              placeholder="Business: Company Name&#10;Service: What you offer&#10;Offer: Special deal&#10;Target: Who you call"
             />
           </div>
 
-          <div style={styles.sidebarSection}>
-            <div style={styles.sectionLabel}>Client List</div>
-            <button style={styles.uploadBtn} onClick={() => fileRef.current.click()}>
-              ↑ Upload CSV / Excel
-            </button>
-            <input ref={fileRef} type="file" accept=".csv,.txt" style={{ display: "none" }} onChange={handleFileUpload} />
-            <div style={{ fontSize: "10px", color: MUTED, marginTop: "6px", textAlign: "center" }}>
-              Columns: name, phone, contact, industry
+          {/* Upload & add */}
+          <div style={{ padding: "14px 16px", borderBottom: `1px solid ${BORDER}` }}>
+            <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: MUTED, textTransform: "uppercase", marginBottom: "10px" }}>Client List</div>
+            <div style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
+              <button
+                onClick={() => fileRef.current.click()}
+                style={{ flex: 1, padding: "8px", background: "transparent", border: `1px dashed ${MUTED}`, borderRadius: "6px", color: MUTED, fontFamily: "inherit", fontSize: "11px", cursor: "pointer" }}
+              >
+                ↑ Upload CSV
+              </button>
+              <button
+                onClick={() => setShowAddForm((v) => !v)}
+                style={{ padding: "8px 12px", background: showAddForm ? `${ACCENT}22` : "transparent", border: `1px solid ${showAddForm ? ACCENT : BORDER}`, borderRadius: "6px", color: showAddForm ? ACCENT : MUTED, fontFamily: "inherit", fontSize: "11px", cursor: "pointer" }}
+              >
+                + Add
+              </button>
             </div>
+            <input ref={fileRef} type="file" accept=".csv,.txt" style={{ display: "none" }} onChange={handleFileUpload} />
+            <div style={{ fontSize: "10px", color: MUTED, textAlign: "center" }}>Columns: name, phone, contact, industry</div>
+
+            {/* Add client form */}
+            {showAddForm && (
+              <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                <input style={inp} placeholder="Company name *" value={newClient.name} onChange={(e) => setNewClient((p) => ({ ...p, name: e.target.value }))} onKeyDown={(e) => e.key === "Enter" && addClient()} />
+                <input style={inp} placeholder="Contact person" value={newClient.contact} onChange={(e) => setNewClient((p) => ({ ...p, contact: e.target.value }))} />
+                <input style={inp} placeholder="Phone number" value={newClient.phone} onChange={(e) => setNewClient((p) => ({ ...p, phone: e.target.value }))} />
+                <input style={inp} placeholder="Industry" value={newClient.industry} onChange={(e) => setNewClient((p) => ({ ...p, industry: e.target.value }))} onKeyDown={(e) => e.key === "Enter" && addClient()} />
+                <div style={{ display: "flex", gap: "6px" }}>
+                  <button onClick={addClient} style={{ flex: 1, padding: "7px", background: `${ACCENT}22`, border: `1px solid ${ACCENT}44`, borderRadius: "5px", color: ACCENT, fontFamily: "inherit", fontSize: "11px", cursor: "pointer" }}>
+                    Add Client
+                  </button>
+                  <button onClick={() => { setShowAddForm(false); setNewClient({ name: "", contact: "", phone: "", industry: "" }); }} style={{ padding: "7px 12px", background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "5px", color: MUTED, fontFamily: "inherit", fontSize: "11px", cursor: "pointer" }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
-          <div style={styles.clientList}>
-            <div style={styles.sectionLabel}>Clients ({clients.length})</div>
-            {clients.map((c) => (
+          {/* Search */}
+          <div style={{ padding: "10px 16px", borderBottom: `1px solid ${BORDER}` }}>
+            <input
+              style={{ ...inp, marginBottom: 0 }}
+              placeholder="Search clients..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+
+          {/* Client list */}
+          <div style={{ flex: 1, overflowY: "auto", padding: "10px 12px" }}>
+            <div style={{ fontSize: "10px", letterSpacing: "0.12em", color: MUTED, textTransform: "uppercase", marginBottom: "8px", paddingLeft: "4px" }}>
+              Clients ({filteredClients.length}{search ? ` of ${clients.length}` : ""})
+            </div>
+
+            {filteredClients.length === 0 && (
+              <div style={{ textAlign: "center", color: MUTED, fontSize: "11px", padding: "24px 0" }}>
+                {search ? "No clients match your search" : "No clients yet — upload a CSV or add manually"}
+              </div>
+            )}
+
+            {filteredClients.map((c) => (
               <div
                 key={c.id}
-                style={styles.clientCard(selected === c.id, c.status)}
-                onClick={() => { setSelected(c.id); setScript(null); setNoteInput(""); }}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: "6px",
+                  border: `1px solid ${selected === c.id ? ACCENT : BORDER}`,
+                  marginBottom: "6px",
+                  cursor: "pointer",
+                  background: selected === c.id ? `${ACCENT}0D` : "transparent",
+                  transition: "all 0.15s",
+                  position: "relative",
+                }}
+                onClick={() => { setSelected(c.id); setConfirmDeleteId(null); }}
               >
-                <div style={styles.clientName}>
-                  <span style={styles.statusDot(c.status)} />
-                  {c.name}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={{ fontSize: "13px", fontWeight: "600", color: TEXT, display: "flex", alignItems: "center", gap: "6px", flex: 1, minWidth: 0 }}>
+                    <span style={{ display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", flexShrink: 0, background: statusColor(c.status) }} />
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</span>
+                  </div>
+                  {/* Delete button */}
+                  {confirmDeleteId === c.id ? (
+                    <div style={{ display: "flex", gap: "4px", flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => deleteClient(c.id)} style={{ padding: "2px 8px", background: `${DANGER}22`, border: `1px solid ${DANGER}66`, borderRadius: "4px", color: DANGER, fontSize: "10px", cursor: "pointer", fontFamily: "inherit" }}>
+                        Confirm
+                      </button>
+                      <button onClick={() => setConfirmDeleteId(null)} style={{ padding: "2px 6px", background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "4px", color: MUTED, fontSize: "10px", cursor: "pointer", fontFamily: "inherit" }}>
+                        ✕
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(c.id); }}
+                      style={{ padding: "2px 6px", background: "transparent", border: "none", color: MUTED, fontSize: "12px", cursor: "pointer", opacity: 0.5, flexShrink: 0 }}
+                      title="Delete client"
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
-                <div style={styles.clientMeta}>
+
+                <div style={{ fontSize: "11px", color: MUTED, marginTop: "3px", paddingLeft: "12px" }}>
                   {c.contact && <span>{c.contact} · </span>}
                   <span>{c.phone}</span>
-                  {c.industry && <span style={styles.tag("#7B8FFF")}>{c.industry}</span>}
+                  {c.industry && (
+                    <span style={{ display: "inline-block", padding: "1px 6px", borderRadius: "3px", fontSize: "10px", background: `${INFO}22`, color: INFO, border: `1px solid ${INFO}44`, marginLeft: "6px" }}>
+                      {c.industry}
+                    </span>
+                  )}
                 </div>
+
                 {c.notes && (
-                  <div style={{ fontSize: "10px", color: MUTED, marginTop: "4px", fontStyle: "italic" }}>
-                    {c.notes.split("\n").pop()}
+                  <div style={{ fontSize: "10px", color: MUTED, marginTop: "4px", paddingLeft: "12px", fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    → {c.notes.split("\n").pop()}
                   </div>
                 )}
               </div>
@@ -482,78 +644,132 @@ Keep it natural, conversational, and persuasive. Use "আপনি" for respect.
           </div>
         </div>
 
-        {/* MAIN CONTENT */}
-        <div style={styles.content}>
+        {/* ── Main content ── */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", background: BG, minWidth: 0 }}>
           {!selectedClient ? (
-            <div style={styles.emptyState}>
-              <div style={{ fontSize: "32px" }}>☎</div>
-              <div style={{ fontSize: "13px" }}>Select a client to start calling</div>
-              <div style={{ fontSize: "11px", color: MUTED }}>Upload your CSV or use the sample clients</div>
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: MUTED, gap: "14px" }}>
+              <div style={{ fontSize: "40px" }}>☎</div>
+              <div style={{ fontSize: "14px", color: TEXT }}>Select a client to start calling</div>
+              <div style={{ fontSize: "11px" }}>Upload your CSV or use the sample clients on the left</div>
+              <div style={{ fontSize: "10px", marginTop: "4px", padding: "8px 16px", background: `${ACCENT}0A`, border: `1px solid ${ACCENT}22`, borderRadius: "6px", color: ACCENT, maxWidth: "320px", textAlign: "center", lineHeight: "1.7" }}>
+                Scripts are generated instantly — no internet or API key needed
+              </div>
             </div>
           ) : (
             <>
-              <div style={styles.contentHeader}>
+              {/* Client header */}
+              <div style={{ padding: "16px 24px", borderBottom: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
                 <div>
-                  <div style={{ fontSize: "11px", color: MUTED, marginBottom: "4px", letterSpacing: "0.1em" }}>
+                  <div style={{ fontSize: "10px", color: MUTED, letterSpacing: "0.12em", marginBottom: "4px" }}>
                     CALLING — {selectedClient.name.toUpperCase()}
+                    {selectedClient.industry && <span style={{ color: INFO, marginLeft: "8px" }}>· {selectedClient.industry}</span>}
                   </div>
-                  <div style={styles.phoneDisplay}>{selectedClient.phone}</div>
+                  <div style={{ fontSize: "22px", letterSpacing: "0.08em", color: ACCENT, fontWeight: "700" }}>
+                    {selectedClient.phone}
+                  </div>
                 </div>
-                <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-                  {!script && (
-                    <button style={styles.generateBtn} onClick={generateScript} disabled={loading}>
-                      {loading ? <><span style={styles.spinner} />Generating...</> : "⚡ Generate Script"}
-                    </button>
-                  )}
+                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
                   <button
-                    style={styles.callBtn(calling)}
-                    onClick={() => setCalling(!calling)}
+                    onClick={handleGenerateScript}
+                    disabled={loading}
+                    style={{
+                      padding: "9px 18px",
+                      background: `${ACCENT}22`,
+                      border: `1px solid ${ACCENT}44`,
+                      borderRadius: "6px",
+                      color: ACCENT,
+                      fontFamily: "inherit",
+                      fontSize: "12px",
+                      cursor: loading ? "not-allowed" : "pointer",
+                      letterSpacing: "0.05em",
+                      opacity: loading ? 0.6 : 1,
+                    }}
                   >
-                    {calling ? "⏹ END CALL" : "▶ START CALL"}
+                    {loading ? (
+                      <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{ display: "inline-block", width: "10px", height: "10px", border: `2px solid ${ACCENT}44`, borderTop: `2px solid ${ACCENT}`, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                        Generating...
+                      </span>
+                    ) : script ? "↺ Regenerate" : "⚡ Generate Script"}
+                  </button>
+                  <button
+                    onClick={() => setCalling((v) => !v)}
+                    style={{
+                      padding: "9px 20px",
+                      background: calling ? DANGER : ACCENT,
+                      border: "none",
+                      borderRadius: "6px",
+                      color: calling ? "#fff" : "#000",
+                      fontFamily: "inherit",
+                      fontSize: "12px",
+                      fontWeight: "700",
+                      cursor: "pointer",
+                      letterSpacing: "0.08em",
+                      minWidth: "110px",
+                    }}
+                  >
+                    {calling ? `⏹ END  ${formatTime(callTime)}` : "▶ START CALL"}
                   </button>
                 </div>
               </div>
 
-              <div style={styles.scriptArea}>
+              {/* Script area */}
+              <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
+
+                {/* Call in progress banner */}
                 {calling && (
-                  <div style={{ ...styles.scriptBlock, borderColor: `${ACCENT}44`, background: `${ACCENT}08`, marginBottom: "20px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: ACCENT, animation: "pulse 1s infinite" }} />
-                      <span style={{ fontSize: "12px", color: ACCENT, letterSpacing: "0.1em" }}>CALL IN PROGRESS</span>
-                      <span style={{ fontSize: "11px", color: MUTED, marginLeft: "auto" }}>
-                        {selectedClient.name} · {selectedClient.phone}
-                      </span>
-                    </div>
+                  <div style={{ background: `${ACCENT}08`, border: `1px solid ${ACCENT}33`, borderRadius: "8px", padding: "14px 18px", marginBottom: "16px", display: "flex", alignItems: "center", gap: "12px" }}>
+                    <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: ACCENT, animation: "pulse 1s infinite", flexShrink: 0, display: "inline-block" }} />
+                    <span style={{ fontSize: "12px", color: ACCENT, letterSpacing: "0.1em" }}>CALL IN PROGRESS</span>
+                    <span style={{ fontSize: "13px", color: ACCENT, fontWeight: "700", marginLeft: "4px" }}>{formatTime(callTime)}</span>
+                    <span style={{ fontSize: "11px", color: MUTED, marginLeft: "auto" }}>{selectedClient.name} · {selectedClient.phone}</span>
                   </div>
                 )}
 
+                {/* Loading state */}
                 {loading && (
-                  <div style={{ ...styles.scriptBlock, textAlign: "center", padding: "40px" }}>
-                    <div style={{ ...styles.spinner, width: "20px", height: "20px", display: "inline-block" }} />
-                    <div style={{ fontSize: "12px", color: MUTED, marginTop: "12px" }}>
+                  <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: "8px", padding: "48px 24px", textAlign: "center", marginBottom: "16px" }}>
+                    <div style={{ display: "inline-block", width: "22px", height: "22px", border: `2px solid ${ACCENT}33`, borderTop: `2px solid ${ACCENT}`, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                    <div style={{ fontSize: "12px", color: MUTED, marginTop: "14px" }}>
                       Generating personalized script for {selectedClient.name}...
                     </div>
                   </div>
                 )}
 
-                {script && Object.entries(script).map(([section, text]) => text && (
-                  <div key={section} style={styles.scriptBlock}>
-                    <div style={styles.scriptLabel}>{section}</div>
-                    <div style={styles.scriptText}>{text}</div>
-                  </div>
-                ))}
+                {/* Script sections */}
+                {!loading && script && Object.entries(script).map(([section, text]) =>
+                  text ? (
+                    <div key={section} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: "8px", padding: "18px 20px", marginBottom: "14px" }}>
+                      <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: MUTED, textTransform: "uppercase", marginBottom: "10px" }}>{section}</div>
+                      <div style={{ fontSize: "13px", lineHeight: "1.85", color: TEXT, whiteSpace: "pre-wrap" }}>{text}</div>
+                    </div>
+                  ) : null
+                )}
 
-                {!script && !loading && (
-                  <div style={{ textAlign: "center", padding: "60px 20px", color: MUTED }}>
-                    <div style={{ fontSize: "28px", marginBottom: "12px" }}>✦</div>
-                    <div style={{ fontSize: "13px", marginBottom: "8px" }}>No script generated yet</div>
-                    <div style={{ fontSize: "11px" }}>Click "Generate Script" to create an AI call script for {selectedClient.name}</div>
+                {/* Empty script state */}
+                {!loading && !script && (
+                  <div style={{ textAlign: "center", padding: "72px 24px", color: MUTED }}>
+                    <div style={{ fontSize: "32px", marginBottom: "14px" }}>✦</div>
+                    <div style={{ fontSize: "13px", marginBottom: "8px", color: TEXT }}>No script generated yet</div>
+                    <div style={{ fontSize: "11px", lineHeight: "1.7" }}>
+                      Click <span style={{ color: ACCENT }}>"⚡ Generate Script"</span> to create a personalized
+                      <br />Bangla cold call script for {selectedClient.name}
+                    </div>
+                    <div style={{ fontSize: "10px", marginTop: "16px", color: MUTED }}>
+                      Scripts use your business info + industry-specific templates — no API needed
+                    </div>
                   </div>
                 )}
 
+                {/* Notes */}
                 {selectedClient.notes && (
-                  <div style={{ ...styles.scriptBlock, borderColor: "#FFB80033" }}>
-                    <div style={styles.scriptLabel}>📝 Call Notes</div>
+                  <div style={{ background: CARD, border: `1px solid ${WARN}33`, borderRadius: "8px", padding: "18px 20px", marginTop: "4px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
+                      <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: MUTED, textTransform: "uppercase" }}>Call Notes</div>
+                      <button onClick={clearAllNotes} style={{ fontSize: "10px", color: MUTED, background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "4px", padding: "2px 8px", cursor: "pointer", fontFamily: "inherit" }}>
+                        Clear all
+                      </button>
+                    </div>
                     {selectedClient.notes.split("\n").map((n, i) => (
                       <div key={i} style={{ fontSize: "12px", color: MUTED, lineHeight: "1.8" }}>→ {n}</div>
                     ))}
@@ -561,21 +777,46 @@ Keep it natural, conversational, and persuasive. Use "আপনি" for respect.
                 )}
               </div>
 
-              <div style={styles.bottomBar}>
+              {/* Bottom bar */}
+              <div style={{ borderTop: `1px solid ${BORDER}`, padding: "14px 24px", display: "flex", gap: "10px", flexShrink: 0, background: CARD, alignItems: "center" }}>
                 <input
-                  style={styles.noteInput}
-                  placeholder="Add call note..."
+                  style={{ flex: 1, background: BG, border: `1px solid ${BORDER}`, borderRadius: "6px", color: TEXT, fontFamily: "inherit", fontSize: "12px", padding: "9px 14px", outline: "none" }}
+                  placeholder="Add call note... (Enter to save)"
                   value={noteInput}
                   onChange={(e) => setNoteInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && saveNote()}
                 />
-                <button style={{ ...styles.generateBtn, whiteSpace: "nowrap" }} onClick={saveNote}>
+                <button
+                  onClick={saveNote}
+                  style={{ padding: "9px 14px", background: `${ACCENT}22`, border: `1px solid ${ACCENT}44`, borderRadius: "6px", color: ACCENT, fontFamily: "inherit", fontSize: "11px", cursor: "pointer", whiteSpace: "nowrap" }}
+                >
                   Save Note
                 </button>
-                <div style={styles.statusBtns}>
-                  <button style={styles.statusBtn(ACCENT, selectedClient.status === "converted")} onClick={() => setStatus("converted")}>✓ Lead</button>
-                  <button style={styles.statusBtn("#FFB800", selectedClient.status === "follow-up")} onClick={() => setStatus("follow-up")}>↺ Follow-up</button>
-                  <button style={styles.statusBtn("#FF4444", selectedClient.status === "not-interested")} onClick={() => setStatus("not-interested")}>✗ No</button>
+                <div style={{ display: "flex", gap: "6px" }}>
+                  {[
+                    { label: "✓ Lead", status: "converted", color: ACCENT },
+                    { label: "↺ Follow-up", status: "follow-up", color: WARN },
+                    { label: "✗ No", status: "not-interested", color: DANGER },
+                  ].map(({ label, status, color }) => (
+                    <button
+                      key={status}
+                      onClick={() => setStatus(status)}
+                      style={{
+                        padding: "8px 12px",
+                        background: selectedClient.status === status ? `${color}22` : "transparent",
+                        border: `1px solid ${selectedClient.status === status ? color : BORDER}`,
+                        borderRadius: "6px",
+                        color: selectedClient.status === status ? color : MUTED,
+                        fontFamily: "inherit",
+                        fontSize: "11px",
+                        cursor: "pointer",
+                        letterSpacing: "0.04em",
+                        transition: "all 0.15s",
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
               </div>
             </>
