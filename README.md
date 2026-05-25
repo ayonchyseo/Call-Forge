@@ -9,12 +9,54 @@ An AI-powered cold calling assistant that generates personalized Bangla call scr
 - 📞 **Call Tracking** — Mark calls in progress, add notes
 - 📊 **Lead Status** — Track: Lead ✓ / Follow-up ↺ / Not Interested ✗
 - 📈 **Live Stats** — See conversion counts at a glance
+- 🤖 **AI Auto-Calling (proof-of-concept)** — An AI agent dials the number, holds a Bangla conversation, books a meeting, and logs the lead automatically (see below)
+
+## AI Auto-Calling (proof-of-concept)
+
+The **🤖 AI Call** button doesn't just open the dialer — it triggers an autonomous
+AI agent that *calls the number itself*, talks to the prospect in English, tries to
+book a meeting, and writes the outcome (lead status + meeting time + transcript)
+back into the client record. Then the existing **↓ Export** button hands you an
+Excel/CSV with all of it. Built for outbound calling to the US, UK, AU, and NZ.
+
+This needs a small backend (`server/`) plus a voice provider. We use
+[Vapi](https://vapi.ai), which bundles telephony + English speech-to-text/text-to-speech
++ the LLM, so the backend stays tiny. Free trial credits are enough to test it.
+
+**Using your own Twilio number:** in the Vapi dashboard click *Import Twilio
+Number*, paste your Twilio SID + auth token + number, and Vapi gives you a
+`phoneNumberId` to drop into `server/.env`. The AI then dials out from your
+Twilio number.
+
+> ⚠️ **Not yet tested against live telephony.** The code path is complete, but a
+> real call needs your own Vapi/Twilio account + number, and you should validate
+> voice quality on a test call before relying on it.
+>
+> ⚠️ **Compliance:** automated/AI cold calls to the US, UK, AU, and NZ are
+> regulated (e.g. TCPA, AI-disclosure and do-not-call rules). Confirm consent
+> and disclosure requirements before running real campaigns.
+
+### Setup
+
+```bash
+npm install
+cp server/.env.example server/.env   # then fill in VAPI_API_KEY + VAPI_PHONE_NUMBER_ID
+npm run server                       # starts the AI-call backend on :8787
+npm run dev                          # starts the frontend (separate terminal)
+```
+
+For the AI to report results back, Vapi needs a public webhook URL. Locally,
+run `ngrok http 8787` and set `PUBLIC_URL` in `server/.env` to the https URL.
+Without it you can still see results in the Vapi dashboard.
+
+The frontend talks to `http://localhost:8787` by default; override with
+`VITE_API_URL` if you host the backend elsewhere.
 
 ## Tech Stack
 
 - React 18 + Vite
 - Anthropic Claude API (claude-sonnet-4-20250514)
-- No backend required
+- Core app needs no backend; AI auto-calling adds an optional Node/Express + Vapi backend
 
 ## Getting Started
 
