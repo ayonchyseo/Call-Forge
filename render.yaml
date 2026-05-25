@@ -1,0 +1,19 @@
+# Render one-click deploy for CallForge (dashboard + AI-calling backend).
+# Render → New → Blueprint → connect this repo. Then paste the secret values
+# below in the Render dashboard. PUBLIC_URL is set automatically.
+services:
+  - type: web
+    name: callforge
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false

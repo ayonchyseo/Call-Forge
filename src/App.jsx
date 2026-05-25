@@ -196,7 +196,7 @@ function scriptToText(script) {
     .join("\n\n");
 }
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8787";
+const API_URL = import.meta.env.VITE_API_URL || (typeof window !== "undefined" ? window.location.origin : "");
 
 // ── Improved CSV parser (handles quoted fields with commas) ───────────────────
 function parseCSVLine(line) {

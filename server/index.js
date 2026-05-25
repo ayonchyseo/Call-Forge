@@ -27,7 +27,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_FILE = path.join(__dirname, "data", "calls.json");
 
 const PORT = process.env.PORT || 8787;
-const PUBLIC_URL = process.env.PUBLIC_URL || "";           // e.g. https://abc123.ngrok.app
+// On Render the public URL is provided automatically; otherwise set it yourself.
+const PUBLIC_URL = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/$/, "");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
@@ -168,6 +169,16 @@ app.get("/api/ai-call/:callId", (req, res) => {
   const { instructions, ...safe } = call;
   res.json(safe);
 });
+
+// ── serve the built dashboard from the same server (one URL for everything) ──
+const distDir = path.join(__dirname, "..", "dist");
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api")) return next();
+    res.sendFile(path.join(distDir, "index.html"));
+  });
+}
 
 // ── websocket bridge: Twilio media stream  <->  OpenAI Realtime ─────────────
 const server = http.createServer(app);

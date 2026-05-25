@@ -28,22 +28,33 @@ Lowest-cost defaults are used (`gpt-4o-mini-realtime` for the call, `gpt-4o-mini
 for analysis). Rough cost ≈ Twilio per-minute (varies by country) + OpenAI realtime
 audio minutes.
 
-### Setup
+### Go live — no terminal needed (deploy to Render)
+
+This repo includes a `render.yaml`, so the dashboard + calling backend deploy as
+one live URL with no commands and no ngrok.
+
+1. Get an **OpenAI API key** → https://platform.openai.com/api-keys
+2. In **Twilio** (https://console.twilio.com): buy a voice-capable number, and copy
+   your **Account SID** and **Auth Token** from the dashboard.
+3. Push this repo to GitHub, then on **Render** (https://render.com): *New → Blueprint*,
+   connect the repo. When prompted, paste the four secrets:
+   `OPENAI_API_KEY`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`.
+4. Deploy. Render gives you a public `https://...onrender.com` URL — that's your
+   **live dashboard** (the calling backend runs at the same URL; `PUBLIC_URL` is set
+   automatically). Open it, pick a client, hit **🤖 AI Call**.
+
+Visit `https://your-app.onrender.com/api/health` to confirm everything is configured.
+API keys live only on the server (set in Render), never in the browser.
+
+### Run locally instead (optional, needs a terminal)
 
 ```bash
 npm install
 cp server/.env.example server/.env   # fill in OpenAI + Twilio keys
 ngrok http 8787                       # gives a public https URL for Twilio
 # put that https URL into PUBLIC_URL in server/.env
-npm run server                        # AI-call backend on :8787
-npm run dev                           # frontend (separate terminal)
+npm run build && npm run server       # dashboard + backend on :8787
 ```
-
-**Where do the API keys go?** All in `server/.env` (never in the browser):
-`OPENAI_API_KEY`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`,
-and `PUBLIC_URL`. Hit `http://localhost:8787/api/health` to see what's still missing.
-
-The frontend talks to `http://localhost:8787` by default; override with `VITE_API_URL`.
 
 > ⚠️ **Not yet tested against live telephony.** The full Twilio↔OpenAI bridge is
 > implemented, but a real call needs your own Twilio number + OpenAI key, and you
