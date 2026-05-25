@@ -14,18 +14,27 @@ An AI-powered cold calling assistant that generates personalized Bangla call scr
 ## AI Auto-Calling (proof-of-concept)
 
 The **🤖 AI Call** button doesn't just open the dialer — it triggers an autonomous
-AI agent that *calls the number itself*, talks to the prospect in Bangla, tries to
+AI agent that *calls the number itself*, talks to the prospect in English, tries to
 book a meeting, and writes the outcome (lead status + meeting time + transcript)
 back into the client record. Then the existing **↓ Export** button hands you an
-Excel/CSV with all of it.
+Excel/CSV with all of it. Built for outbound calling to the US, UK, AU, and NZ.
 
 This needs a small backend (`server/`) plus a voice provider. We use
-[Vapi](https://vapi.ai), which bundles telephony + Bangla speech-to-text/text-to-speech
+[Vapi](https://vapi.ai), which bundles telephony + English speech-to-text/text-to-speech
 + the LLM, so the backend stays tiny. Free trial credits are enough to test it.
 
+**Using your own Twilio number:** in the Vapi dashboard click *Import Twilio
+Number*, paste your Twilio SID + auth token + number, and Vapi gives you a
+`phoneNumberId` to drop into `server/.env`. The AI then dials out from your
+Twilio number.
+
 > ⚠️ **Not yet tested against live telephony.** The code path is complete, but a
-> real call needs your own Vapi account + phone number, and Bangla voice quality
-> should be validated on a test call before relying on it.
+> real call needs your own Vapi/Twilio account + number, and you should validate
+> voice quality on a test call before relying on it.
+>
+> ⚠️ **Compliance:** automated/AI cold calls to the US, UK, AU, and NZ are
+> regulated (e.g. TCPA, AI-disclosure and do-not-call rules). Confirm consent
+> and disclosure requirements before running real campaigns.
 
 ### Setup
 

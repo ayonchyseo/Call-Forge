@@ -792,7 +792,7 @@ export default function App() {
                   <button
                     onClick={startAiCall}
                     disabled={aiCalling}
-                    title="AI calls the number, talks in Bangla, and logs the lead automatically"
+                    title="AI calls the number, talks to the prospect in English, and logs the lead automatically"
                     style={{
                       padding: "9px 18px",
                       background: aiCalling ? `${INFO}22` : INFO,

@@ -29,9 +29,10 @@ const PUBLIC_URL = process.env.PUBLIC_URL;             // public https url for t
 const LLM_PROVIDER = process.env.VAPI_LLM_PROVIDER || "anthropic";
 const LLM_MODEL = process.env.VAPI_LLM_MODEL || "claude-3-5-sonnet-20241022";
 const VOICE_PROVIDER = process.env.VAPI_VOICE_PROVIDER || "azure";
-const VOICE_ID = process.env.VAPI_VOICE_ID || "bn-BD-NabanitaNeural";
-const STT_PROVIDER = process.env.VAPI_STT_PROVIDER || "azure";
-const STT_LANGUAGE = process.env.VAPI_STT_LANGUAGE || "bn-BD";
+const VOICE_ID = process.env.VAPI_VOICE_ID || "en-US-JennyNeural";
+const STT_PROVIDER = process.env.VAPI_STT_PROVIDER || "deepgram";
+const STT_MODEL = process.env.VAPI_STT_MODEL || "nova-2";
+const STT_LANGUAGE = process.env.VAPI_STT_LANGUAGE || "en";
 
 // ── tiny JSON file store (fine for a PoC) ───────────────────────────────────
 function loadCalls() {
@@ -51,24 +52,24 @@ const calls = loadCalls();
 // ── build the AI assistant for one client ───────────────────────────────────
 function buildSystemPrompt({ name, contact, industry, businessInfo, scriptText }) {
   return [
-    "তুমি একজন বাংলায় কথা বলা professional cold-calling sales agent। সম্পূর্ণ কথোপকথন বাংলায় (প্রয়োজনে English term মিশিয়ে) করবে — natural, ভদ্র এবং সংক্ষিপ্ত।",
+    "You are a professional cold-calling sales agent making an outbound call in clear, natural English. Be polite, warm, conversational, and concise — never robotic or pushy.",
     "",
-    "তোমার business সম্পর্কে তথ্য:",
+    "About your business:",
     businessInfo || "(no business info provided)",
     "",
-    `তুমি কল করছো: ${name}${contact ? ` (যোগাযোগ: ${contact})` : ""}${industry ? `, খাত: ${industry}` : ""}`,
+    `You are calling: ${name}${contact ? ` (contact: ${contact})` : ""}${industry ? `, industry: ${industry}` : ""}.`,
     "",
-    "নিচের script-টা guideline হিসেবে অনুসরণ করো (হুবহু পড়বে না, স্বাভাবিকভাবে কথা বলবে):",
+    "Use the script below as a loose guide for structure and intent (do NOT read it verbatim, and if any of it is in another language, just convey the intent naturally in English):",
     "----------------",
-    scriptText || "(no script provided — improvise a polite intro, pitch, and meeting request)",
+    scriptText || "(no script provided — improvise a polite intro, a short pitch, and a meeting request)",
     "----------------",
     "",
-    "লক্ষ্য:",
-    "1. ভদ্রভাবে introduce করো এবং কথা বলার অনুমতি নাও।",
-    "2. তাদের প্রয়োজন বোঝো এবং offer-টা সংক্ষেপে পেশ করো।",
-    "3. আগ্রহী হলে একটি ১৫-২০ মিনিটের meeting এর জন্য একটি নির্দিষ্ট দিন ও সময় propose করো এবং confirm করো।",
-    "4. আগ্রহী না হলে ভদ্রভাবে ধন্যবাদ দিয়ে কল শেষ করো।",
-    "কখনো অভদ্র হবে না, কখনো মিথ্যা তথ্য দেবে না। কল ছোট রাখো।",
+    "Goals:",
+    "1. Introduce yourself politely and ask if it's a good time to talk briefly.",
+    "2. Understand their needs and present the offer succinctly.",
+    "3. If they're interested, propose a specific day and time for a 15-20 minute meeting and confirm it.",
+    "4. If they're not interested, thank them politely and end the call.",
+    "Never be rude, never fabricate information, keep the call short, and respect if they ask not to be called.",
   ].join("\n");
 }
 
@@ -76,7 +77,7 @@ function buildAssistant(client) {
   return {
     name: `CallForge — ${client.name}`,
     firstMessage:
-      "আসসালামু আলাইকুম, ভালো আছেন? আমি একটু কথা বলতে চাইছিলাম, আপনার কি এখন ২ মিনিট সময় হবে?",
+      "Hi, how are you today? I was hoping to share something quickly — do you have a couple of minutes?",
     model: {
       provider: LLM_PROVIDER,
       model: LLM_MODEL,
@@ -84,7 +85,7 @@ function buildAssistant(client) {
       temperature: 0.6,
     },
     voice: { provider: VOICE_PROVIDER, voiceId: VOICE_ID },
-    transcriber: { provider: STT_PROVIDER, language: STT_LANGUAGE },
+    transcriber: { provider: STT_PROVIDER, model: STT_MODEL, language: STT_LANGUAGE },
     // Ask Vapi to summarise + extract structured lead/meeting data after the call.
     analysisPlan: {
       summaryPlan: { enabled: true },
@@ -93,11 +94,11 @@ function buildAssistant(client) {
         schema: {
           type: "object",
           properties: {
-            isLead: { type: "boolean", description: "ব্যক্তি আগ্রহী এবং একটি potential lead কিনা" },
+            isLead: { type: "boolean", description: "Whether the person is interested and a potential lead" },
             interestLevel: { type: "string", enum: ["high", "medium", "low", "none"] },
-            meetingRequested: { type: "boolean", description: "একটি meeting এ রাজি হয়েছে কিনা" },
-            meetingTime: { type: "string", description: "confirm হওয়া meeting এর দিন/সময়, না হলে খালি" },
-            summary: { type: "string", description: "কলের সংক্ষিপ্ত বাংলা সারাংশ" },
+            meetingRequested: { type: "boolean", description: "Whether they agreed to a meeting" },
+            meetingTime: { type: "string", description: "The confirmed meeting day/time, empty if none" },
+            summary: { type: "string", description: "A short summary of the call" },
           },
         },
       },
