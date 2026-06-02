@@ -39,7 +39,12 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_FROM_NUMBER = process.env.TWILIO_FROM_NUMBER;  // your Twilio number, E.164 e.g. +15551234567
-const REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || "gpt-4o-mini-realtime-preview";
+// GA Realtime model candidates. If the first isn't accessible on the account/key,
+// the bridge automatically falls back to the next one DURING the call. Override
+// with OPENAI_REALTIME_MODEL to pin a single model (e.g. a cheaper one).
+const REALTIME_MODELS = process.env.OPENAI_REALTIME_MODEL
+  ? [process.env.OPENAI_REALTIME_MODEL]
+  : ["gpt-realtime", "gpt-realtime-mini", "gpt-4o-realtime-preview"];
 const ANALYSIS_MODEL = process.env.OPENAI_ANALYSIS_MODEL || "gpt-4o-mini";
 const VOICE = process.env.OPENAI_VOICE || "alloy";
 // Hard cap on call length so a stuck/forgotten call can't run up charges.
@@ -164,7 +169,9 @@ function finalizeCall(call, reason) {
       saveCalls();
     });
   } else {
-    call.result = { ...cannedOutcome(reason), transcript: "", endedReason: reason || "" };
+    const base = cannedOutcome(reason);
+    if (call.lastError) base.summary = `AI error: ${call.lastError}`;
+    call.result = { ...base, transcript: "", endedReason: call.lastError || reason || "" };
   }
   saveCalls();
 }
@@ -361,60 +368,87 @@ wss.on("connection", (twilioWs) => {
   let greeted = false;
   let responding = false;    // an assistant response is currently being generated
   let framesToTwilio = 0;
+  let modelIdx = 0;          // index into REALTIME_MODELS (auto-fallback)
+  const seen = new Set();    // log each OpenAI event type once
   const pending = [];        // caller audio that arrives before the session is ready
 
   const log = (...a) => console.log(`[call ${callId || "?"}]`, ...a);
+  const recordError = (msg) => { const c = callId && calls[callId]; if (c) c.lastError = msg; };
 
   function finalize(reason) {
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
     finalizeCall(callId && calls[callId], reason);
   }
 
+  function startConversation(ws) {
+    if (greeted || ws.readyState !== WebSocket.OPEN) return;
+    greeted = true;
+    openaiReady = true;
+    log(`session ready → greeting; flushing ${pending.length} queued audio frames`);
+    ws.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: { type: "message", role: "user", content: [{ type: "input_text", text: "The call just connected. Greet the person warmly and begin the conversation now." }] },
+    }));
+    ws.send(JSON.stringify({ type: "response.create" }));
+    while (pending.length && ws.readyState === WebSocket.OPEN) ws.send(pending.shift());
+  }
+
+  // Try the next model if the current one isn't usable; returns true if it retried.
+  function tryNextModel(why) {
+    if (greeted || modelIdx >= REALTIME_MODELS.length - 1) return false;
+    log(`model "${REALTIME_MODELS[modelIdx]}" unusable (${why}) → trying next`);
+    modelIdx++;
+    connectOpenAI();
+    return true;
+  }
+
   function connectOpenAI() {
     const call = calls[callId];
     const key = call?.openaiKey || OPENAI_API_KEY;
-    if (!key) { log("✗ no OpenAI key available — cannot start the agent"); return finalize("openai-error"); }
-    log("connecting to OpenAI Realtime, model:", REALTIME_MODEL);
-    openaiWs = new WebSocket(`wss://api.openai.com/v1/realtime?model=${REALTIME_MODEL}`, {
-      headers: { Authorization: `Bearer ${key}`, "OpenAI-Beta": "realtime=v1" },
+    if (!key) { log("✗ no OpenAI key available"); recordError("No OpenAI key provided."); return finalize("openai-error"); }
+    const model = REALTIME_MODELS[modelIdx];
+    log(`connecting to OpenAI Realtime (GA) — model ${modelIdx + 1}/${REALTIME_MODELS.length}: ${model}`);
+    // GA Realtime API: /v1/realtime, NO "OpenAI-Beta" header (that's the retired beta).
+    const ws = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`, {
+      headers: { Authorization: `Bearer ${key}` },
     });
+    openaiWs = ws;
 
-    openaiWs.on("open", () => {
-      log("OpenAI ws open → configuring session");
-      openaiWs.send(JSON.stringify({
+    ws.on("open", () => {
+      log("OpenAI ws open → sending GA session.update");
+      // GA session shape: audio.input/output with object formats; pcmu = G.711 µ-law (Twilio).
+      ws.send(JSON.stringify({
         type: "session.update",
         session: {
-          modalities: ["text", "audio"],
+          type: "realtime",
           instructions: call?.instructions || "You are a polite sales agent.",
-          voice: VOICE,
-          input_audio_format: "g711_ulaw",
-          output_audio_format: "g711_ulaw",
-          input_audio_transcription: { model: "whisper-1" },
-          turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600 },
+          output_modalities: ["audio"],
+          audio: {
+            input: {
+              format: { type: "audio/pcmu" },
+              turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600 },
+              transcription: { model: "whisper-1" },
+            },
+            output: {
+              format: { type: "audio/pcmu" },
+              voice: VOICE,
+            },
+          },
         },
       }));
+      // Greet even if we somehow don't see session.updated (but after config has a moment to apply).
+      setTimeout(() => { if (ws === openaiWs && !greeted && ws.readyState === WebSocket.OPEN) { log("no session.updated after 3s — greeting anyway"); startConversation(ws); } }, 3000);
     });
 
-    openaiWs.on("message", (raw) => {
+    ws.on("message", (raw) => {
       let evt;
       try { evt = JSON.parse(raw.toString()); } catch { return; }
       const call = calls[callId];
+      if (!seen.has(evt.type)) { seen.add(evt.type); log("OpenAI event:", evt.type); }
 
       switch (evt.type) {
         case "session.updated":
-          // Session is now configured — safe to greet and to forward audio.
-          if (!greeted) {
-            greeted = true;
-            openaiReady = true;
-            log(`session ready → greeting; flushing ${pending.length} queued audio frames`);
-            // Nudge the model to speak first (don't wait for the prospect).
-            openaiWs.send(JSON.stringify({
-              type: "conversation.item.create",
-              item: { type: "message", role: "user", content: [{ type: "input_text", text: "The call just connected. Greet the person warmly and begin the conversation now." }] },
-            }));
-            openaiWs.send(JSON.stringify({ type: "response.create" }));
-            while (pending.length && openaiWs.readyState === WebSocket.OPEN) openaiWs.send(pending.shift());
-          }
+          startConversation(ws);
           break;
         case "response.created":
           responding = true;
@@ -422,34 +456,46 @@ wss.on("connection", (twilioWs) => {
         case "response.done":
           responding = false;
           break;
+        // GA emits response.output_audio.delta; accept the old name too just in case.
+        case "response.output_audio.delta":
         case "response.audio.delta":
           if (evt.delta && streamSid) {
-            if (++framesToTwilio === 1) log("▶ first audio frame sent to Twilio (agent is speaking)");
+            if (++framesToTwilio === 1) log("▶ first audio frame → Twilio (agent is speaking)");
             twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: evt.delta } }));
           }
           break;
         case "input_audio_buffer.speech_started":
-          // Prospect started talking — stop our playback, and cancel only if we're mid-response.
           if (streamSid) twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
-          if (responding && openaiWs?.readyState === WebSocket.OPEN) openaiWs.send(JSON.stringify({ type: "response.cancel" }));
+          if (responding && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "response.cancel" }));
           break;
         case "conversation.item.input_audio_transcription.completed":
           if (call) { const t = (evt.transcript || "").trim(); if (t) { call.transcript.push({ role: "prospect", text: t }); saveCalls(); log("prospect:", t); } }
           break;
+        case "response.output_audio_transcript.done":
         case "response.audio_transcript.done":
           if (call) { const t = (evt.transcript || "").trim(); if (t) { call.transcript.push({ role: "agent", text: t }); saveCalls(); log("agent:", t); } }
           break;
         case "error":
-          log("✗ OpenAI error:", JSON.stringify(evt.error || evt));
+          // Log + record but don't cycle here: real connection failures (bad model,
+          // no access, retired protocol) surface as a ws "close", handled below.
+          log("✗ OpenAI error event:", JSON.stringify(evt.error || evt));
+          recordError((evt.error && (evt.error.message || evt.error.code)) || "OpenAI error");
           break;
       }
     });
 
-    openaiWs.on("error", (err) => { log("✗ OpenAI ws error:", err?.message || err); finalize("openai-error"); });
-    openaiWs.on("close", (code, reasonBuf) => {
+    ws.on("error", (err) => { log("✗ OpenAI ws error:", err?.message || err); });
+    ws.on("close", (code, reasonBuf) => {
       const reason = (reasonBuf && reasonBuf.toString()) || "";
-      log(`OpenAI ws closed (code=${code} reason="${reason}"); audio frames sent to Twilio: ${framesToTwilio}`);
       openaiReady = false;
+      if (ws !== openaiWs) return; // a superseded (retried) socket closing — ignore
+      log(`OpenAI ws closed (code=${code} reason="${reason}"); audio frames sent to Twilio: ${framesToTwilio}`);
+      if (greeted) return;
+      if (tryNextModel(`closed code=${code}`)) return;
+      // All models exhausted and we never got audio — surface it and end the dead-air call.
+      recordError(`Realtime connection failed: ${reason || `code ${code}`}. Check OpenAI Realtime access / OPENAI_REALTIME_MODEL.`);
+      finalize("openai-error");
+      hangupTwilio(calls[callId]);
     });
   }
 
