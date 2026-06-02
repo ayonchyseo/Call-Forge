@@ -190,7 +190,10 @@ function scriptToText(script) {
     .join("\n\n");
 }
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8787";
+// Where the backend lives. In dev → local server; in a production build → same
+// origin (so a single deployed service serving this UI just works). Override with
+// VITE_API_URL at build time or the Backend URL field in Settings.
+const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:8787" : "");
 
 const DEFAULT_SETTINGS = {
   targetLang: "English",

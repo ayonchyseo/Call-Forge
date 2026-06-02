@@ -107,15 +107,15 @@ The frontend uses the **Backend URL** from Settings (or `VITE_API_URL`, default
 ### Deploying the backend (required for live AI calls)
 
 A static site (e.g. Vercel) **cannot place phone calls** — Twilio must stream call audio
-to a long-running server with a public websocket. Deploy `server/index.js` to any host
-that runs Node and keeps a process alive (Render, Railway, Fly.io, a VPS, …):
+to a long-running server with a public websocket. This repo ships ready-to-deploy configs:
 
-1. Deploy the repo; start command `npm run server` (or `node server/index.js`).
-2. Set `PUBLIC_URL` to the service's public **https** URL (no trailing slash).
-3. In the app's **⚙ Settings**, set **Backend URL** to that same URL and add your
-   OpenAI + Twilio keys.
+- **`render.yaml`** — one-click [Render](https://render.com) Blueprint that deploys the
+  **whole app** (UI + backend) at one URL. `PUBLIC_URL` is auto-detected. *Recommended.*
+- **`Dockerfile`** — single container for Fly.io / Railway / a VPS.
+- **`Procfile`** — for Railway / Heroku-style hosts.
 
-The frontend can stay on Vercel; it just needs to point at this backend for AI calls.
+**👉 Full click-by-click instructions (Render, Vercel+backend, local ngrok, Docker) and
+the "what to do on your end" checklist are in [`DEPLOY.md`](./DEPLOY.md).**
 
 ### 4. Single-command production run
 ```bash
