@@ -5,18 +5,18 @@
 //                                    Twilio number and streams the call audio to
 //                                    this server over a websocket.
 //   2. /media-stream (websocket)  → bridges Twilio's audio <-> OpenAI's Realtime
-//                                    API. OpenAI does speech-to-speech (listen +
-//                                    think + talk) in one connection, in English.
+//                                    API. OpenAI does speech-to-speech in one
+//                                    connection, in the target language.
 //   3. POST /api/twilio-status    → Twilio tells us when the call rings / is
-//                                    answered / ends (so we never wait forever on
-//                                    a no-answer, busy, or failed call).
+//                                    answered / ends (so we never wait forever).
 //   4. When the call ends, a cheap gpt-4o-mini call reads the transcript and
 //      extracts the lead status + meeting time + summary.
 //   5. GET /api/ai-call/:callId   → the frontend polls this for live status,
 //                                    partial transcript, and the final outcome.
 //
-// Only Twilio + OpenAI are used. Lowest-cost defaults: gpt-4o-mini-realtime for
-// the call, gpt-4o-mini for the post-call analysis. See server/.env.example.
+// Keys can come from the UI (per request) OR from server/.env. Per-request keys
+// take priority, so the app can be fully configured from the browser. PUBLIC_URL
+// is the one thing that must be set on the server (it's the backend's own URL).
 
 import express from "express";
 import cors from "cors";
@@ -47,10 +47,16 @@ const CALL_MAX_SECONDS = Number(process.env.CALL_MAX_SECONDS || 300);
 function loadCalls() {
   try { return JSON.parse(fs.readFileSync(DATA_FILE, "utf8")); } catch { return {}; }
 }
+// Persist calls WITHOUT secrets — user-supplied keys stay in memory only.
 function saveCalls() {
   try {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-    fs.writeFileSync(DATA_FILE, JSON.stringify(calls, null, 2));
+    const sanitized = {};
+    for (const [id, c] of Object.entries(calls)) {
+      const { openaiKey, acct, ...rest } = c;
+      sanitized[id] = rest;
+    }
+    fs.writeFileSync(DATA_FILE, JSON.stringify(sanitized, null, 2));
   } catch (err) {
     console.warn("Could not persist calls.json:", err.message);
   }
@@ -58,33 +64,38 @@ function saveCalls() {
 const calls = loadCalls();
 
 // ── the agent's instructions for one client ─────────────────────────────────
-function buildInstructions({ name, contact, industry, businessInfo, scriptText }) {
+function buildInstructions({ name, contact, industry, businessInfo, scriptText, targetLang, aiInstructions }) {
+  const lang = (targetLang || "English").trim() || "English";
   return [
-    "You are a professional cold-calling sales agent on an outbound phone call. Speak natural, warm, conversational English. Be polite and concise, never robotic or pushy. Keep your turns short like a real phone conversation.",
+    `You are a professional cold-calling sales agent on an outbound phone call. Speak natural, warm, conversational ${lang}. Be polite and concise, never robotic or pushy. Keep your turns short like a real phone conversation.`,
     "",
     "About your business:",
     businessInfo || "(no business info provided)",
+    aiInstructions && aiInstructions.trim()
+      ? `\nExtra instructions from the business owner — follow these carefully:\n${aiInstructions.trim()}`
+      : "",
     "",
     `You are calling: ${name || "a prospect"}${contact ? ` (contact: ${contact})` : ""}${industry ? `, industry: ${industry}` : ""}.`,
     "",
-    "Use the script below as a loose guide for structure and intent — do NOT read it verbatim, and if any of it is not in English just convey the intent naturally in English:",
+    `Use the script below as a loose guide for structure and intent — do NOT read it verbatim, and if any of it is not in ${lang} just convey the intent naturally in ${lang}:`,
     "----------------",
     scriptText || "(no script provided — improvise a polite intro, a short pitch, and a meeting request)",
     "----------------",
     "",
     "Goals: (1) introduce yourself and ask if it's a good time; (2) understand their need and present the offer briefly; (3) if interested, propose a specific day/time for a 15-20 min meeting and confirm it; (4) if not interested, thank them and end politely.",
-    "Never fabricate facts. Respect requests not to be called. Open the call by greeting them first.",
+    `Always speak ${lang}. Never fabricate facts. Respect requests not to be called. Open the call by greeting them first.`,
   ].join("\n");
 }
 
 // ── post-call analysis with a cheap model ───────────────────────────────────
-async function analyzeTranscript(transcript) {
+async function analyzeTranscript(transcript, apiKey) {
+  const key = apiKey || OPENAI_API_KEY;
   const fallback = { isLead: false, interestLevel: "none", meetingRequested: false, meetingTime: "", summary: "" };
-  if (!transcript.trim() || !OPENAI_API_KEY) return fallback;
+  if (!transcript.trim() || !key) return fallback;
   try {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({
         model: ANALYSIS_MODEL,
         response_format: { type: "json_object" },
@@ -123,13 +134,14 @@ function cannedOutcome(reason) {
 
 // Hang up an in-flight Twilio call (stops charges on stuck/expired calls).
 async function hangupTwilio(call) {
-  if (!call?.twilioSid || !TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) return;
+  const sid = call?.acct?.sid, token = call?.acct?.token;
+  if (!call?.twilioSid || !sid || !token) return;
   try {
-    await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls/${call.twilioSid}.json`, {
+    await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls/${call.twilioSid}.json`, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: "Basic " + Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64"),
+        Authorization: "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
       },
       body: new URLSearchParams({ Status: "completed" }),
     });
@@ -145,7 +157,7 @@ function finalizeCall(call, reason) {
   call.endedReason = reason || "";
   const text = call.transcript.map((t) => `${t.role}: ${t.text}`.trim()).filter(Boolean).join("\n");
   if (text.trim()) {
-    analyzeTranscript(text).then((analysis) => {
+    analyzeTranscript(text, call.openaiKey).then((analysis) => {
       call.result = { ...analysis, transcript: text, endedReason: reason || "" };
       saveCalls();
     });
@@ -163,33 +175,32 @@ app.use(express.urlencoded({ extended: false })); // Twilio status callbacks are
 app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
-    configured: Boolean(OPENAI_API_KEY && TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && TWILIO_FROM_NUMBER && PUBLIC_URL),
-    missing: [
-      !OPENAI_API_KEY && "OPENAI_API_KEY",
-      !TWILIO_ACCOUNT_SID && "TWILIO_ACCOUNT_SID",
-      !TWILIO_AUTH_TOKEN && "TWILIO_AUTH_TOKEN",
-      !TWILIO_FROM_NUMBER && "TWILIO_FROM_NUMBER",
-      !PUBLIC_URL && "PUBLIC_URL",
-    ].filter(Boolean),
+    // Server-side config is optional now (keys can come from the UI). PUBLIC_URL
+    // is the one value only the server can provide for live calls.
+    publicUrl: Boolean(PUBLIC_URL),
+    hasServerOpenAI: Boolean(OPENAI_API_KEY),
+    hasServerTwilio: Boolean(TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && TWILIO_FROM_NUMBER),
   });
 });
 
-// Generate an English cold-call script from business info written in ANY language.
-// Only needs OPENAI_API_KEY (not Twilio). The frontend falls back to a local
-// English template engine if this is unavailable.
+// Generate a cold-call script in the target language from business info written
+// in ANY language. Key comes from the request (UI) or falls back to server env.
 app.post("/api/generate-script", async (req, res) => {
-  if (!OPENAI_API_KEY) return res.status(503).json({ error: "OPENAI_API_KEY not set on the server." });
-  const { name, contact, industry, businessInfo } = req.body || {};
+  const { name, contact, industry, businessInfo, openaiKey, targetLang, aiInstructions } = req.body || {};
+  const key = openaiKey || OPENAI_API_KEY;
+  if (!key) return res.status(503).json({ error: "No OpenAI key. Add it in Settings, or set OPENAI_API_KEY on the server." });
   if (!businessInfo || !String(businessInfo).trim()) return res.status(400).json({ error: "businessInfo is required." });
+  const lang = (targetLang || "English").trim() || "English";
 
   const sys = [
     "You are an expert B2B cold-calling script writer.",
     "The business description and prospect details may be written in ANY language (e.g. Bangla, Spanish, Arabic, Hindi).",
-    "ALWAYS write the final script in natural, professional ENGLISH suitable for calling prospects in the US, UK, Australia and New Zealand — translate any non-English input.",
+    `ALWAYS write the final script in natural, professional ${lang} — translate any input that is in a different language.`,
+    aiInstructions && aiInstructions.trim() ? `Honor these extra instructions from the business owner: ${aiInstructions.trim()}.` : "",
     "Return ONLY a JSON object with these exact string keys:",
     '"OPENING", "HOOK", "PITCH", "OBJECTION HANDLING", "MEETING CLOSE", "CLOSING".',
     "Each value is the spoken text for that phase — warm, concise, not robotic. Use { } placeholders for details the caller fills in live, e.g. { your name }.",
-  ].join(" ");
+  ].filter(Boolean).join(" ");
   const user = [
     `Business / offer (may be non-English):\n${String(businessInfo).slice(0, 4000)}`,
     "",
@@ -199,7 +210,7 @@ app.post("/api/generate-script", async (req, res) => {
   try {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({
         model: ANALYSIS_MODEL,
         response_format: { type: "json_object" },
@@ -222,14 +233,26 @@ app.post("/api/generate-script", async (req, res) => {
 
 // Start an outbound AI call via Twilio.
 app.post("/api/ai-call", async (req, res) => {
-  const missing = [];
-  if (!OPENAI_API_KEY) missing.push("OPENAI_API_KEY");
-  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) missing.push("TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN");
-  if (!TWILIO_FROM_NUMBER) missing.push("TWILIO_FROM_NUMBER");
-  if (!PUBLIC_URL) missing.push("PUBLIC_URL");
-  if (missing.length) return res.status(500).json({ error: `Server is missing: ${missing.join(", ")}. See server/.env.example.` });
+  const {
+    clientId, name, contact, phone, industry, businessInfo, scriptText,
+    openaiKey, twilioSid, twilioToken, twilioFrom, targetLang, aiInstructions,
+  } = req.body || {};
 
-  const { clientId, name, contact, phone, industry, businessInfo, scriptText } = req.body || {};
+  // Resolve credentials: request (UI) first, then server env.
+  const oaKey = openaiKey || OPENAI_API_KEY;
+  const twSid = twilioSid || TWILIO_ACCOUNT_SID;
+  const twToken = twilioToken || TWILIO_AUTH_TOKEN;
+  const twFrom = twilioFrom || TWILIO_FROM_NUMBER;
+
+  const missing = [];
+  if (!oaKey) missing.push("OpenAI key");
+  if (!twSid || !twToken) missing.push("Twilio Account SID + Auth Token");
+  if (!twFrom) missing.push("Twilio From number");
+  if (!PUBLIC_URL) missing.push("PUBLIC_URL (set on the backend server)");
+  if (missing.length) {
+    return res.status(500).json({ error: `Missing: ${missing.join(", ")}. Add your keys in Settings; PUBLIC_URL is configured on the backend.` });
+  }
+
   const number = String(phone || "").replace(/[^+\d]/g, "");
   if (!number || number.length < 8 || !number.startsWith("+")) {
     return res.status(400).json({ error: "Invalid phone number — use full international format, e.g. +14155550142." });
@@ -239,7 +262,9 @@ app.post("/api/ai-call", async (req, res) => {
   calls[callId] = {
     callId, clientId, name, phone,
     status: "in-progress", twilioStatus: "queued", startedAt: new Date().toISOString(),
-    instructions: buildInstructions({ name, contact, industry, businessInfo, scriptText }),
+    openaiKey: oaKey,                       // in-memory only (never persisted/exposed)
+    acct: { sid: twSid, token: twToken },   // in-memory only
+    instructions: buildInstructions({ name, contact, industry, businessInfo, scriptText, targetLang, aiInstructions }),
     transcript: [], result: null,
   };
   saveCalls();
@@ -255,18 +280,18 @@ app.post("/api/ai-call", async (req, res) => {
   try {
     const body = new URLSearchParams({
       To: number,
-      From: TWILIO_FROM_NUMBER,
+      From: twFrom,
       Twiml: twiml,
       StatusCallback: statusUrl,
       StatusCallbackMethod: "POST",
     });
     ["initiated", "ringing", "answered", "completed"].forEach((e) => body.append("StatusCallbackEvent", e));
 
-    const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls.json`, {
+    const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twSid}/Calls.json`, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: "Basic " + Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64"),
+        Authorization: "Basic " + Buffer.from(`${twSid}:${twToken}`).toString("base64"),
       },
       body,
     });
@@ -315,7 +340,8 @@ app.post("/api/twilio-status", (req, res) => {
 app.get("/api/ai-call/:callId", (req, res) => {
   const call = calls[req.params.callId];
   if (!call) return res.status(404).json({ error: "Unknown call id" });
-  const { instructions, ...safe } = call;
+  // Never echo secrets back to the client.
+  const { instructions, openaiKey, acct, ...safe } = call;
   res.json(safe);
 });
 
@@ -337,8 +363,9 @@ wss.on("connection", (twilioWs) => {
 
   function connectOpenAI() {
     const call = calls[callId];
+    const key = call?.openaiKey || OPENAI_API_KEY;
     openaiWs = new WebSocket(`wss://api.openai.com/v1/realtime?model=${REALTIME_MODEL}`, {
-      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "OpenAI-Beta": "realtime=v1" },
+      headers: { Authorization: `Bearer ${key}`, "OpenAI-Beta": "realtime=v1" },
     });
 
     openaiWs.on("open", () => {
@@ -419,7 +446,6 @@ if (fs.existsSync(DIST_DIR)) {
 server.listen(PORT, () => {
   console.log(`CallForge AI-call backend (Twilio + OpenAI) on http://localhost:${PORT}`);
   if (fs.existsSync(DIST_DIR)) console.log(`Serving built UI from ${DIST_DIR}`);
-  const need = ["OPENAI_API_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "PUBLIC_URL"]
-    .filter((k) => !process.env[k]);
-  if (need.length) console.log(`⚠  Not configured yet — set in server/.env: ${need.join(", ")}`);
+  if (!PUBLIC_URL) console.log("⚠  PUBLIC_URL not set — required for live AI calls (run `ngrok http 8787` and set it in server/.env).");
+  console.log("ℹ  OpenAI/Twilio keys can be entered in the app's Settings, or set here in server/.env.");
 });

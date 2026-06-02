@@ -10,19 +10,22 @@ calling to the **US, UK, AU, and NZ**.
 ## Features
 
 - 📋 **Client Management** — Upload clients via CSV or add them manually
-- 🌐 **Any-language → English scripts** — Enter your business info in any language; CallForge writes a structured English cold-call script. Works offline too via a built-in English template engine.
+- 🌐 **Any-language → your-language scripts** — Enter business info in any language; CallForge writes a structured script in the language you pick. Works offline too via a built-in template engine.
+- ⚙ **In-app Settings** — Save your OpenAI/Twilio keys, target language, AI call instructions, and backend URL right in the browser (no `.env` editing required).
 - 📞 **Manual Calling** — Tap-to-dial (`tel:`) with a call timer and notes
-- 🤖 **AI Auto-Calling** — An AI agent dials the number itself, holds an English conversation, tries to book a meeting, and logs the outcome (see below)
+- 🤖 **AI Auto-Calling** — An AI agent dials the number itself, holds the conversation, tries to book a meeting, and logs the outcome (see below)
 - 📊 **Lead Status & Live Stats** — Track Lead ✓ / Follow-up ↺ / Declined ✗ with at-a-glance conversion counts
 - ↓ **Export** — Download all clients, statuses, and notes as CSV
+- ❓ **Built-in Help** — A "How to use" guide is one click away in the header
 
 ## How script generation works
 
-When the **AI backend** is running with an `OPENAI_API_KEY`, the **⚡ Generate Script**
-button sends your business info to a cheap `gpt-4o-mini` call that **translates any input
-language into a professional English script**. If the backend is unreachable, it
-automatically falls back to a fully offline English template engine — so the app always
-produces a usable script.
+With an **OpenAI key in ⚙ Settings**, the **⚡ Generate Script** button calls a cheap
+`gpt-4o-mini` model **directly from your browser** (no backend needed) that **translates any
+input language into a professional script in your chosen language**. With no key set, it
+automatically falls back to a fully offline template engine — so the app always produces a
+usable script. (If you'd rather keep the key on a server, the backend exposes the same
+`/api/generate-script`.)
 
 ## AI Auto-Calling (Twilio + OpenAI only — no Vapi)
 
@@ -69,28 +72,50 @@ npm run dev
 The app runs at the URL Vite prints. Script generation falls back to the offline
 English template engine until the backend is configured.
 
-### 3. Configure the AI backend (for English AI scripts + real calls)
-```bash
-cp server/.env.example server/.env   # fill in your keys (see below)
-ngrok http 8787                       # gives a public https URL for Twilio
-# put that https URL into PUBLIC_URL in server/.env
-npm run server                        # AI backend on :8787
-```
+### 3. Add your keys — two ways
 
-All keys live in `server/.env` (never in the browser):
+**A) In the app (⚙ Settings) — easiest, works with the hosted frontend.**
+Open **⚙ Settings** and paste your **OpenAI key**, **Twilio** keys, your **backend URL**,
+pick a **language**, and add any **AI call instructions**. Keys are stored only in your
+browser (localStorage) and sent directly to OpenAI / your backend.
+- With just an **OpenAI key**, AI script generation runs **directly in the browser** — no
+  backend required (great for a Vercel-hosted frontend).
+- For **live AI calls** you also need Twilio keys **and** a deployed backend URL (below).
+
+**B) On the server (`server/.env`) — for self-hosting everything.**
+```bash
+cp server/.env.example server/.env   # fill in your keys
+ngrok http 8787                       # public https URL for Twilio
+# put that https URL into PUBLIC_URL in server/.env
+npm run server                        # backend on :8787
+```
 
 | Variable | Needed for | Notes |
 |---|---|---|
-| `OPENAI_API_KEY` | AI scripts **and** calls | https://platform.openai.com/api-keys |
-| `TWILIO_ACCOUNT_SID` | calls | https://console.twilio.com |
+| `OPENAI_API_KEY` | AI scripts + calls | https://platform.openai.com/api-keys (or enter in Settings) |
+| `TWILIO_ACCOUNT_SID` | calls | https://console.twilio.com (or enter in Settings) |
 | `TWILIO_AUTH_TOKEN` | calls | |
 | `TWILIO_FROM_NUMBER` | calls | your Twilio voice number, E.164 e.g. `+15551234567` |
-| `PUBLIC_URL` | calls | public https URL Twilio can reach (e.g. ngrok) |
+| `PUBLIC_URL` | calls | public https URL Twilio can reach — **must be set on the server** |
 
-Hit `http://localhost:8787/api/health` to see what's still missing. Only
-`OPENAI_API_KEY` is required for AI script generation; the full set is needed for calls.
+Per-request keys from Settings take priority over `server/.env`. `PUBLIC_URL` is the one
+value only the backend can provide. Hit `http://localhost:8787/api/health` to check config.
 
-The frontend talks to `http://localhost:8787` by default; override with `VITE_API_URL`.
+The frontend uses the **Backend URL** from Settings (or `VITE_API_URL`, default
+`http://localhost:8787`).
+
+### Deploying the backend (required for live AI calls)
+
+A static site (e.g. Vercel) **cannot place phone calls** — Twilio must stream call audio
+to a long-running server with a public websocket. Deploy `server/index.js` to any host
+that runs Node and keeps a process alive (Render, Railway, Fly.io, a VPS, …):
+
+1. Deploy the repo; start command `npm run server` (or `node server/index.js`).
+2. Set `PUBLIC_URL` to the service's public **https** URL (no trailing slash).
+3. In the app's **⚙ Settings**, set **Backend URL** to that same URL and add your
+   OpenAI + Twilio keys.
+
+The frontend can stay on Vercel; it just needs to point at this backend for AI calls.
 
 ### 4. Single-command production run
 ```bash

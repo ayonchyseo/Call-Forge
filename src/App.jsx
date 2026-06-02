@@ -192,6 +192,64 @@ function scriptToText(script) {
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8787";
 
+const DEFAULT_SETTINGS = {
+  targetLang: "English",
+  aiInstructions: "",
+  openaiKey: "",
+  twilioSid: "",
+  twilioToken: "",
+  twilioFrom: "",
+  backendUrl: "",
+};
+
+const LANGUAGES = ["English", "Spanish", "French", "German", "Portuguese", "Arabic", "Hindi", "Bangla", "Chinese", "Japanese"];
+
+// Short code for the target language, shown in the header badge.
+function langShort(lang) {
+  const map = { english: "EN", spanish: "ES", french: "FR", german: "DE", arabic: "AR", hindi: "HI", bangla: "BN", bengali: "BN", portuguese: "PT", chinese: "ZH", japanese: "JA" };
+  const l = (lang || "English").trim();
+  return map[l.toLowerCase()] || l.slice(0, 2).toUpperCase();
+}
+
+// ── Browser-direct OpenAI script generation (works with NO backend) ───────────
+// Uses the user's own key (from Settings), calling api.openai.com directly, so
+// real AI scripts work even on static hosting like Vercel.
+async function openaiGenerateScript({ client, businessInfo, openaiKey, targetLang, aiInstructions }) {
+  const lang = (targetLang || "English").trim() || "English";
+  const sys = [
+    "You are an expert B2B cold-calling script writer.",
+    "The business description and prospect details may be written in ANY language (e.g. Bangla, Spanish, Arabic, Hindi).",
+    `ALWAYS write the final script in natural, professional ${lang} — translate any input that is in a different language.`,
+    aiInstructions && aiInstructions.trim() ? `Honor these extra instructions from the business owner: ${aiInstructions.trim()}.` : "",
+    'Return ONLY a JSON object with these exact string keys: "OPENING", "HOOK", "PITCH", "OBJECTION HANDLING", "MEETING CLOSE", "CLOSING".',
+    "Each value is the spoken text for that phase — warm, concise, not robotic. Use { } placeholders for details the caller fills in live, e.g. { your name }.",
+  ].filter(Boolean).join(" ");
+  const user = `Business / offer (may be non-English):\n${String(businessInfo).slice(0, 4000)}\n\nProspect: ${client.name || "(company)"}${client.contact ? `, contact ${client.contact}` : ""}${client.industry ? `, industry ${client.industry}` : ""}.`;
+
+  const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${openaiKey}` },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      response_format: { type: "json_object" },
+      messages: [{ role: "system", content: sys }, { role: "user", content: user }],
+    }),
+  });
+  if (!r.ok) {
+    let msg = "OpenAI request failed";
+    try { msg = (await r.json())?.error?.message || msg; } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  const data = await r.json();
+  const parsed = JSON.parse(data.choices?.[0]?.message?.content || "{}");
+  const ORDER = ["OPENING", "HOOK", "PITCH", "OBJECTION HANDLING", "MEETING CLOSE", "CLOSING"];
+  const script = {};
+  for (const k of ORDER) if (typeof parsed[k] === "string" && parsed[k].trim()) script[k] = parsed[k];
+  for (const [k, v] of Object.entries(parsed)) if (!script[k] && typeof v === "string" && v.trim()) script[k] = v;
+  if (!Object.keys(script).length) throw new Error("Model returned an empty script");
+  return script;
+}
+
 // ── Improved CSV parser (handles quoted fields with commas) ───────────────────
 function parseCSVLine(line) {
   const fields = [];
@@ -292,6 +350,131 @@ function ToastList({ toasts }) {
   );
 }
 
+// ── Modal scaffolding ─────────────────────────────────────────────────────────
+const modalInp = {
+  width: "100%", background: BG, border: `1px solid ${BORDER}`, borderRadius: "6px",
+  color: TEXT, fontFamily: "inherit", fontSize: "12px", padding: "9px 11px", outline: "none", boxSizing: "border-box",
+};
+
+function Overlay({ title, onClose, children, footer }) {
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "#000A", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: "10px", width: "100%", maxWidth: "520px", maxHeight: "86vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ padding: "16px 20px", borderBottom: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+          <div style={{ fontSize: "13px", color: ACCENT, letterSpacing: "0.1em" }}>{title}</div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: MUTED, fontSize: "18px", cursor: "pointer", lineHeight: 1 }}>✕</button>
+        </div>
+        <div style={{ padding: "18px 20px", overflowY: "auto" }}>{children}</div>
+        {footer && <div style={{ padding: "14px 20px", borderTop: `1px solid ${BORDER}`, display: "flex", gap: "10px", justifyContent: "flex-end", flexShrink: 0 }}>{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, hint, children }) {
+  return (
+    <div style={{ marginBottom: "15px" }}>
+      <div style={{ fontSize: "10px", letterSpacing: "0.12em", color: MUTED, textTransform: "uppercase", marginBottom: "6px" }}>{label}</div>
+      {children}
+      {hint && <div style={{ fontSize: "10px", color: MUTED, marginTop: "5px", lineHeight: 1.6 }}>{hint}</div>}
+    </div>
+  );
+}
+
+function SettingsModal({ settings, onSave, onClose }) {
+  const [d, setD] = useState(settings);
+  const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
+  const btn = (bg, color, border) => ({ padding: "9px 18px", background: bg, border: `1px solid ${border}`, borderRadius: "6px", color, fontFamily: "inherit", fontSize: "12px", cursor: "pointer" });
+  return (
+    <Overlay
+      title="⚙ SETTINGS"
+      onClose={onClose}
+      footer={<>
+        <button onClick={onClose} style={btn("transparent", MUTED, BORDER)}>Cancel</button>
+        <button onClick={() => { onSave(d); onClose(); }} style={btn(`${ACCENT}22`, ACCENT, `${ACCENT}66`)}>Save</button>
+      </>}
+    >
+      <Field label="Script & call language" hint="Business info can be in any language — scripts and the AI agent will use this language.">
+        <select style={modalInp} value={d.targetLang} onChange={(e) => set("targetLang", e.target.value)}>
+          {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
+        </select>
+      </Field>
+
+      <Field label="AI call instructions / knowledge" hint="Anything the AI agent should know or follow on calls — your offer details, tone, rules, facts, do's & don'ts. The agent obeys this.">
+        <textarea style={{ ...modalInp, height: "100px", resize: "vertical", lineHeight: 1.6 }} value={d.aiInstructions}
+          onChange={(e) => set("aiInstructions", e.target.value)}
+          placeholder={"e.g. Always mention our 14-day free trial. Never promise specific pricing. If asked who we are, say we're an authorized partner. Keep calls under 3 minutes."} />
+      </Field>
+
+      <div style={{ margin: "18px 0 12px", padding: "10px 12px", background: `${WARN}11`, border: `1px solid ${WARN}44`, borderRadius: "6px", fontSize: "10px", color: WARN, lineHeight: 1.6 }}>
+        ⚠ Keys are stored only in <b>this browser</b> (localStorage) and sent to your backend / OpenAI directly. Use your own keys on a device you trust. Don't use this on a shared computer.
+      </div>
+
+      <Field label="OpenAI API key" hint="Enables AI script generation right here in the browser (no backend needed), and powers AI calls. Get one at platform.openai.com/api-keys.">
+        <input type="password" style={modalInp} value={d.openaiKey} onChange={(e) => set("openaiKey", e.target.value)} placeholder="sk-..." autoComplete="off" />
+      </Field>
+
+      <div style={{ fontSize: "10px", letterSpacing: "0.12em", color: INFO, textTransform: "uppercase", margin: "20px 0 10px", borderTop: `1px solid ${BORDER}`, paddingTop: "16px" }}>
+        Twilio — for live AI calls only
+      </div>
+      <Field label="Twilio Account SID">
+        <input style={modalInp} value={d.twilioSid} onChange={(e) => set("twilioSid", e.target.value)} placeholder="AC..." autoComplete="off" />
+      </Field>
+      <Field label="Twilio Auth Token">
+        <input type="password" style={modalInp} value={d.twilioToken} onChange={(e) => set("twilioToken", e.target.value)} placeholder="••••••••" autoComplete="off" />
+      </Field>
+      <Field label="Twilio From number" hint="Your Twilio voice number in international format.">
+        <input style={modalInp} value={d.twilioFrom} onChange={(e) => set("twilioFrom", e.target.value)} placeholder="+15551234567" autoComplete="off" />
+      </Field>
+      <Field label="Backend URL" hint="Where your CallForge call-backend runs (it needs a public URL Twilio can reach). Required for live AI calls — a static site like Vercel can't place calls on its own. Leave blank to use the default localhost backend in development.">
+        <input style={modalInp} value={d.backendUrl} onChange={(e) => set("backendUrl", e.target.value)} placeholder="https://your-backend.onrender.com" autoComplete="off" />
+      </Field>
+
+      <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: "18px", paddingTop: "14px" }}>
+        <button
+          onClick={() => { if (window.confirm("Clear ALL saved data on this device (clients, notes, business info, keys) and reload?")) { localStorage.clear(); window.location.reload(); } }}
+          style={{ background: `${DANGER}11`, border: `1px solid ${DANGER}44`, borderRadius: "6px", color: DANGER, padding: "8px 14px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}
+        >
+          Reset all app data
+        </button>
+        <div style={{ fontSize: "10px", color: MUTED, marginTop: "6px", lineHeight: 1.6 }}>Clears cached clients/notes/keys from this browser and reloads with fresh sample data.</div>
+      </div>
+    </Overlay>
+  );
+}
+
+function HelpModal({ onClose }) {
+  const h = { fontSize: "12px", color: ACCENT, letterSpacing: "0.06em", margin: "16px 0 6px" };
+  const p = { fontSize: "12px", color: TEXT, lineHeight: 1.7, marginBottom: "6px" };
+  const li = { fontSize: "12px", color: MUTED, lineHeight: 1.7, marginLeft: "14px" };
+  return (
+    <Overlay title="? HOW TO USE" onClose={onClose} footer={<button onClick={onClose} style={{ padding: "9px 18px", background: `${ACCENT}22`, border: `1px solid ${ACCENT}66`, borderRadius: "6px", color: ACCENT, fontFamily: "inherit", fontSize: "12px", cursor: "pointer" }}>Got it</button>}>
+      <div style={p}>CallForge helps you cold-call leads: write personalized scripts, dial manually, or let an AI agent place the call for you. You can type your business info in <b>any language</b> — scripts come out in the language you pick in Settings.</div>
+
+      <div style={h}>1 · Describe your business</div>
+      <div style={p}>Fill in the <b>Your Business</b> box (left). Any language is fine.</div>
+
+      <div style={h}>2 · Add your leads</div>
+      <div style={p}>Upload a CSV (<code>name, phone, contact, industry</code>) or click <b>+ Add</b>. For AI calls, phone numbers must be full international format, e.g. <code>+14155550142</code>.</div>
+
+      <div style={h}>3 · Add your keys (Settings ⚙)</div>
+      <div style={li}>• <b>OpenAI key</b> → unlocks AI script generation <i>in your browser</i> (works even on Vercel, no backend).</div>
+      <div style={li}>• <b>AI instructions</b> → what the agent should know/say/avoid on calls.</div>
+      <div style={li}>• <b>Language</b> → output language for scripts and the AI agent.</div>
+
+      <div style={h}>4 · Generate & call</div>
+      <div style={li}>• <b>⚡ Generate Script</b> → personalized script for the selected lead.</div>
+      <div style={li}>• <b>📞 Call Now</b> → dials from your phone (tap-to-dial), you read the script.</div>
+      <div style={li}>• <b>🤖 AI Call</b> → the AI agent dials and talks (needs the backend, below).</div>
+
+      <div style={h}>5 · Live AI calls need a backend</div>
+      <div style={p}>A real phone call requires a small server (Twilio streams the call audio to it). A static site can't do this alone. Deploy <code>server/index.js</code> (Render, Railway, Fly, a VPS…), set <code>PUBLIC_URL</code> to its public https URL, then paste that URL + your Twilio keys into Settings. See the README for steps.</div>
+
+      <div style={{ ...p, marginTop: "14px", color: WARN }}>⚠ AI cold-calling is regulated (TCPA, AI-disclosure, do-not-call). Confirm consent rules and test on your own number first.</div>
+    </Overlay>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [clients, setClients] = useState(() => loadState("cf_clients", SAMPLE_CLIENTS));
@@ -310,6 +493,9 @@ export default function App() {
   const [aiResult, setAiResult] = useState(null);
   const [aiStatus, setAiStatus] = useState("");
   const [aiTranscript, setAiTranscript] = useState([]);
+  const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...loadState("cf_settings", {}) }));
+  const [showSettings, setShowSettings] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const fileRef = useRef();
   const timerRef = useRef();
   const aiPollRef = useRef();
@@ -320,6 +506,9 @@ export default function App() {
   // Persist data
   useEffect(() => { saveState("cf_clients", clients); }, [clients]);
   useEffect(() => { saveState("cf_business", businessInfo); }, [businessInfo]);
+  useEffect(() => { saveState("cf_settings", settings); }, [settings]);
+
+  const apiBase = (settings.backendUrl || "").trim().replace(/\/+$/, "") || API_URL;
 
   // Call timer
   useEffect(() => {
@@ -374,14 +563,22 @@ export default function App() {
     e.target.value = "";
   }
 
-  // Build a script for a client. Tries the AI backend (translates ANY input
-  // language → English); falls back to the offline English template engine.
+  // Build a script for a client. Translates business info (any language) into the
+  // chosen language. Order: (1) browser-direct OpenAI with your key — works with
+  // NO backend; (2) the backend; (3) the offline template engine.
   async function requestScript(client) {
+    const { openaiKey, targetLang, aiInstructions } = settings;
+    if (openaiKey && openaiKey.trim()) {
+      try {
+        const script = await openaiGenerateScript({ client, businessInfo, openaiKey: openaiKey.trim(), targetLang, aiInstructions });
+        return { script, source: "ai" };
+      } catch { /* fall through to backend / template */ }
+    }
     try {
-      const res = await fetch(`${API_URL}/api/generate-script`, {
+      const res = await fetch(`${apiBase}/api/generate-script`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: client.name, contact: client.contact, industry: client.industry, businessInfo }),
+        body: JSON.stringify({ name: client.name, contact: client.contact, industry: client.industry, businessInfo, targetLang, aiInstructions }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -402,7 +599,7 @@ export default function App() {
     try {
       const { script, source } = await requestScript(selectedClient);
       setClients((prev) => prev.map((c) => (c.id === selected ? { ...c, script } : c)));
-      toast(source === "ai" ? "Script generated in English" : "Script generated (offline template)");
+      toast(source === "ai" ? `Script generated (${settings.targetLang})` : "Script generated (offline template — add an OpenAI key in Settings for AI)");
     } catch {
       toast("Script generation failed — please try again", "error");
     }
@@ -422,7 +619,7 @@ export default function App() {
     setAiTranscript([]);
     setAiCalling(true);
     try {
-      const res = await fetch(`${API_URL}/api/ai-call`, {
+      const res = await fetch(`${apiBase}/api/ai-call`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -433,6 +630,13 @@ export default function App() {
           industry: selectedClient.industry,
           businessInfo,
           scriptText: scriptToText(script),
+          // Credentials & options from Settings (backend falls back to its own env).
+          openaiKey: settings.openaiKey,
+          twilioSid: settings.twilioSid,
+          twilioToken: settings.twilioToken,
+          twilioFrom: settings.twilioFrom,
+          targetLang: settings.targetLang,
+          aiInstructions: settings.aiInstructions,
         }),
       });
       const data = await res.json();
@@ -441,7 +645,8 @@ export default function App() {
       pollAiCall(data.callId, selectedClient.id);
     } catch (err) {
       setAiCalling(false);
-      toast(err.message.includes("fetch") ? "Cannot reach AI backend — is `npm run server` running?" : err.message, "error");
+      const cannotReach = err.message.includes("fetch") || err.message.includes("Failed to fetch") || err.message.includes("NetworkError");
+      toast(cannotReach ? "Can't reach the call backend. Live AI calls need a backend server — set its URL in ⚙ Settings (see ? How to use)." : err.message, "error");
     }
   }
 
@@ -457,7 +662,7 @@ export default function App() {
         return;
       }
       try {
-        const res = await fetch(`${API_URL}/api/ai-call/${callId}`);
+        const res = await fetch(`${apiBase}/api/ai-call/${callId}`);
         if (!res.ok) return;
         const data = await res.json();
         if (data.twilioStatus || data.status) setAiStatus(data.twilioStatus || data.status);
@@ -616,6 +821,9 @@ export default function App() {
 
       <ToastList toasts={toasts} />
 
+      {showSettings && <SettingsModal settings={settings} onSave={(s) => { setSettings(s); toast("Settings saved"); }} onClose={() => setShowSettings(false)} />}
+      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+
       {/* ── Header ── */}
       <div style={{ borderBottom: `1px solid ${BORDER}`, padding: "16px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", background: CARD, flexShrink: 0 }}>
         <div style={{ fontSize: "16px", fontWeight: "700", letterSpacing: "0.12em", color: ACCENT }}>⬡ CALLFORGE</div>
@@ -625,12 +833,18 @@ export default function App() {
           <span>Follow-up <span style={{ color: WARN }}>{stats.followUp}</span></span>
           <span>Declined <span style={{ color: DANGER }}>{stats.notInterested}</span></span>
         </div>
-        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <button onClick={() => setShowHelp(true)} title="How to use" style={{ background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "5px", color: MUTED, padding: "5px 11px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>
+            ? Help
+          </button>
+          <button onClick={() => setShowSettings(true)} title="Settings & API keys" style={{ background: settings.openaiKey ? `${ACCENT}18` : "transparent", border: `1px solid ${settings.openaiKey ? `${ACCENT}66` : BORDER}`, borderRadius: "5px", color: settings.openaiKey ? ACCENT : MUTED, padding: "5px 11px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>
+            ⚙ Settings
+          </button>
           <button onClick={exportCSV} style={{ background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "5px", color: MUTED, padding: "5px 12px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>
             ↓ Export
           </button>
-          <div style={{ background: `${ACCENT}22`, color: ACCENT, border: `1px solid ${ACCENT}44`, borderRadius: "4px", padding: "4px 10px", fontSize: "10px", letterSpacing: "0.08em" }}>
-            ANY LANG → EN
+          <div title={`Business info in any language → ${settings.targetLang} output`} style={{ background: `${ACCENT}22`, color: ACCENT, border: `1px solid ${ACCENT}44`, borderRadius: "4px", padding: "4px 10px", fontSize: "10px", letterSpacing: "0.08em" }}>
+            ANY LANG → {langShort(settings.targetLang)}
           </div>
         </div>
       </div>
@@ -781,8 +995,8 @@ export default function App() {
               <div style={{ fontSize: "40px" }}>☎</div>
               <div style={{ fontSize: "14px", color: TEXT }}>Select a client to start calling</div>
               <div style={{ fontSize: "11px" }}>Upload your CSV or use the sample clients on the left</div>
-              <div style={{ fontSize: "10px", marginTop: "4px", padding: "8px 16px", background: `${ACCENT}0A`, border: `1px solid ${ACCENT}22`, borderRadius: "6px", color: ACCENT, maxWidth: "320px", textAlign: "center", lineHeight: "1.7" }}>
-                Enter your business info in any language — scripts are written in English
+              <div style={{ fontSize: "10px", marginTop: "4px", padding: "8px 16px", background: `${ACCENT}0A`, border: `1px solid ${ACCENT}22`, borderRadius: "6px", color: ACCENT, maxWidth: "340px", textAlign: "center", lineHeight: "1.7" }}>
+                Business info in any language → {settings.targetLang} scripts.<br />Add your OpenAI key in ⚙ Settings · new here? tap ? Help
               </div>
             </div>
           ) : (
@@ -968,7 +1182,7 @@ export default function App() {
                       <br />English cold call script for {selectedClient.name}
                     </div>
                     <div style={{ fontSize: "10px", marginTop: "16px", color: MUTED }}>
-                      Write your business info in any language → English script. Falls back to an offline template if the AI backend is offline.
+                      Any input language → {settings.targetLang}. Uses your OpenAI key (⚙ Settings); falls back to an offline template if no key is set.
                     </div>
                   </div>
                 )}
