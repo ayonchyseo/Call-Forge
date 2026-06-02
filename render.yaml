@@ -1,0 +1,32 @@
+# Render Blueprint — deploys the whole CallForge app (frontend + AI-call backend)
+# as ONE service with a public URL Twilio can reach.
+#
+# Steps:
+#   1. Push this repo to GitHub.
+#   2. Render dashboard → New → Blueprint → pick this repo. Render reads this file.
+#   3. When it's live, open the service URL (https://<name>.onrender.com) — that's
+#      your full app. Then in ⚙ Settings add your OpenAI + Twilio keys.
+#
+# PUBLIC_URL is auto-derived from Render's RENDER_EXTERNAL_URL, so you don't set it.
+services:
+  - type: web
+    name: callforge
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: node server/index.js
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Optional — set your keys here instead of in the app's Settings.
+      # In the Render dashboard these stay secret (sync: false).
+      # - key: OPENAI_API_KEY
+      #   sync: false
+      # - key: TWILIO_ACCOUNT_SID
+      #   sync: false
+      # - key: TWILIO_AUTH_TOKEN
+      #   sync: false
+      # - key: TWILIO_FROM_NUMBER
+      #   sync: false

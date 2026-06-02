@@ -32,7 +32,9 @@ const DATA_FILE = path.join(__dirname, "data", "calls.json");
 const DIST_DIR = path.join(__dirname, "..", "dist");
 
 const PORT = process.env.PORT || 8787;
-const PUBLIC_URL = (process.env.PUBLIC_URL || "").replace(/\/+$/, ""); // strip trailing slash
+// PUBLIC_URL is the backend's own public https URL (Twilio streams call audio to it).
+// On Render it's provided automatically as RENDER_EXTERNAL_URL, so no manual setup needed.
+const PUBLIC_URL = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/+$/, "");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
