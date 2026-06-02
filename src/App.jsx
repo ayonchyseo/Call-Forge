@@ -12,76 +12,76 @@ const INFO = "#7B8FFF";
 
 const DEFAULT_BUSINESS = `Business: SoftPulse Agency
 Service: Digital Marketing & Web Development
-Offer: Free website audit + 1 month free social media management
-Target: SME businesses in Bangladesh`;
+Offer: Free website audit + 1 month of social media management, on us
+Target: Small and mid-sized businesses`;
 
 const SAMPLE_CLIENTS = [
-  { id: 1, name: "Rahim Telecom", contact: "Mr. Rahim", phone: "01711-234567", industry: "Telecom", notes: "", status: "new", script: null },
-  { id: 2, name: "Dhaka Logistics Ltd", contact: "Ms. Nadia", phone: "01812-345678", industry: "Logistics", notes: "", status: "new", script: null },
-  { id: 3, name: "GreenTech BD", contact: "Mr. Karim", phone: "01955-456789", industry: "Technology", notes: "", status: "new", script: null },
+  { id: 1, name: "Summit Retail Co", contact: "Sarah Mitchell", phone: "+14155550142", industry: "Retail", notes: "", status: "new", script: null },
+  { id: 2, name: "Orbit Logistics", contact: "James Carter", phone: "+442079460958", industry: "Logistics", notes: "", status: "new", script: null },
+  { id: 3, name: "BrightCare Clinics", contact: "Dr. Emily Nguyen", phone: "+61255501234", industry: "Healthcare", notes: "", status: "new", script: null },
 ];
 
 // ── Industry-specific script content ──────────────────────────────────────────
 const INDUSTRY_MAP = {
   telecom: {
-    pain: "customer acquisition cost বৃদ্ধি এবং market competition",
-    benefit: "নতুন customer আনতে ও existing customer retain করতে",
-    objection: "আমাদের নিজস্ব marketing team আছে",
-    objReply: "অবশ্যই! আমরা আপনার team-কে replace করতে আসিনি — বরং তাদের efforts amplify করতে এসেছি। একসাথে কাজ করলে results অনেক ভালো আসে।",
+    pain: "rising customer acquisition costs and intense market competition",
+    benefit: "win new customers and retain the ones you already have",
+    objection: "We already have our own marketing team",
+    objReply: "Absolutely — we're not here to replace your team, we're here to amplify their efforts. The results are usually much stronger when we work alongside an in-house team.",
   },
   logistics: {
-    pain: "delivery efficiency এবং real-time tracking-এর চ্যালেঞ্জ",
-    benefit: "delivery cost কমাতে ও customer satisfaction বাড়াতে",
-    objection: "আমাদের budget এখন tight",
-    objReply: "আমি বুঝতে পারছি। তাই আমরা প্রথমে একটি free audit offer করছি — কোনো cost ছাড়াই দেখুন কোথায় সুযোগ আছে।",
+    pain: "delivery efficiency and real-time tracking challenges",
+    benefit: "cut delivery costs and improve customer satisfaction",
+    objection: "Our budget is tight right now",
+    objReply: "I completely understand — that's exactly why we start with a free audit, at no cost, so you can see where the opportunities are before committing anything.",
   },
   technology: {
-    pain: "digital presence এবং qualified lead generation-এর সমস্যা",
-    benefit: "online visibility বাড়াতে ও qualified leads পেতে",
-    objection: "আমরা ইতিমধ্যে digital marketing করছি",
-    objReply: "দারুণ! তাহলে আমরা আপনার current strategy review করে দেখাতে পারি কোথায় ROI আরো বাড়ানো যায়।",
+    pain: "building a strong digital presence and generating qualified leads",
+    benefit: "increase online visibility and bring in qualified leads",
+    objection: "We already do digital marketing",
+    objReply: "That's great — then we can review your current strategy and show you exactly where there's room to push your ROI even higher.",
   },
   healthcare: {
-    pain: "patient acquisition এবং appointment management",
-    benefit: "নতুন patient পেতে ও appointment rate বাড়াতে",
-    objection: "Healthcare-এ digital marketing কাজ করে না",
-    objReply: "আসলে healthcare sector-এ digital marketing সবচেয়ে দ্রুত বাড়ছে। আমাদের healthcare clients গড়ে ৪০% বেশি appointment পাচ্ছেন।",
+    pain: "patient acquisition and appointment management",
+    benefit: "attract new patients and raise your appointment rate",
+    objection: "Digital marketing doesn't really work in healthcare",
+    objReply: "Actually, healthcare is one of the fastest-growing sectors for digital marketing — our healthcare clients see around 40% more appointments on average.",
   },
   education: {
-    pain: "student enrollment কমা এবং brand awareness-এর ঘাটতি",
-    benefit: "enrollment বাড়াতে ও শক্তিশালী brand তৈরি করতে",
-    objection: "Students আমাদের খুঁজে নেয়",
-    objReply: "সত্যি কথা! কিন্তু competition বাড়ছে। সঠিক digital strategy থাকলে আরো বেশি students reach করা সম্ভব।",
+    pain: "declining student enrollment and weak brand awareness",
+    benefit: "boost enrollment and build a stronger brand",
+    objection: "Students find us on their own",
+    objReply: "That's true today — but competition is growing fast. With the right digital strategy you can reach far more of the right students.",
   },
   finance: {
-    pain: "client trust building এবং new lead generation",
-    benefit: "নতুন clients পেতে ও brand credibility বাড়াতে",
-    objection: "Finance sector-এ compliance issue আছে",
-    objReply: "আমরা finance sector compliance সম্পর্কে পুরোপুরি aware। আমাদের সব strategy নিয়মকানুন মেনে তৈরি করা হয়।",
+    pain: "building client trust and generating new leads",
+    benefit: "win new clients and strengthen your brand credibility",
+    objection: "There are compliance concerns in the finance sector",
+    objReply: "We're fully aware of finance-sector compliance — every strategy we build is designed to stay within the rules.",
   },
   retail: {
-    pain: "foot traffic কমা এবং online sales growth-এর চ্যালেঞ্জ",
-    benefit: "customer base বাড়াতে ও repeat purchase বাড়াতে",
-    objection: "আমাদের business seasonal",
-    objReply: "Seasonal business-এর জন্য আমাদের কাছে বিশেষ strategy আছে — peak season maximize করা এবং off-season-এও revenue maintain করা।",
+    pain: "declining foot traffic and the push to grow online sales",
+    benefit: "grow your customer base and increase repeat purchases",
+    objection: "Our business is seasonal",
+    objReply: "We have specific strategies for seasonal businesses — maximizing your peak season and keeping revenue steady through the off-season.",
   },
   manufacturing: {
-    pain: "B2B client acquisition এবং market expansion",
-    benefit: "নতুন buyers পেতে ও market expand করতে",
-    objection: "আমরা word-of-mouth-এ চলি",
-    objReply: "Word-of-mouth excellent! Digital presence থাকলে সেটা আরো amplify হয় — international buyers আপনাদের আরো সহজে খুঁজে পাবেন।",
+    pain: "B2B client acquisition and expanding into new markets",
+    benefit: "reach new buyers and expand into new markets",
+    objection: "We grow mostly through word of mouth",
+    objReply: "Word of mouth is excellent — a strong digital presence simply amplifies it, and makes it far easier for serious buyers to find you.",
   },
   realestate: {
-    pain: "property listing visibility এবং qualified buyer পাওয়া",
-    benefit: "property দ্রুত sell/rent করতে ও premium buyers পেতে",
-    objection: "আমরা portal-এ listed আছি",
-    objReply: "Portal listing ভালো, কিন্তু targeted social media ও SEO দিয়ে আরো qualified buyer reach করা যায়।",
+    pain: "listing visibility and finding qualified buyers",
+    benefit: "sell or rent properties faster and reach premium buyers",
+    objection: "We're already listed on the major portals",
+    objReply: "Portals are a good start, but targeted social media and SEO let you reach far more qualified buyers directly.",
   },
   food: {
-    pain: "customer loyalty ধরে রাখা এবং online order growth",
-    benefit: "regular customers ধরে রাখতে ও delivery order বাড়াতে",
-    objection: "আমরা Pathao/Shohoz-এ আছি",
-    objReply: "Third-party platform ভালো, কিন্তু নিজস্ব digital presence থাকলে commission দিতে হয় না ও direct customer relationship তৈরি হয়।",
+    pain: "customer loyalty and growing online orders",
+    benefit: "keep regulars coming back and grow delivery orders",
+    objection: "We're already on the big delivery apps",
+    objReply: "Those apps are useful, but your own digital presence means no commissions and a direct relationship with your customers.",
   },
 };
 
@@ -95,7 +95,7 @@ function getIndustryData(industry) {
 }
 
 function parseBusinessInfo(text) {
-  const info = { name: "আমাদের কোম্পানি", service: "আমাদের সার্ভিস", offer: "বিশেষ প্রস্তাব", target: "SME businesses" };
+  const info = { name: "our company", service: "our service", offer: "a special offer", target: "small and mid-sized businesses" };
   text.split("\n").forEach((line) => {
     const colonIdx = line.indexOf(":");
     if (colonIdx === -1) return;
@@ -114,77 +114,71 @@ function parseBusinessInfo(text) {
 function generateScript(client, businessInfoText) {
   const biz = parseBusinessInfo(businessInfoText);
   const ind = getIndustryData(client.industry) || {
-    pain: "business growth এবং market expansion",
-    benefit: "নতুন clients পেতে ও revenue বাড়াতে",
-    objection: "এখন সময় নেই",
-    objReply: "অবশ্যই! তাহলে কি আগামী সপ্তাহে একটি convenient সময়ে কথা বলতে পারি?",
+    pain: "business growth and market expansion",
+    benefit: "win new clients and grow revenue",
+    objection: "I don't have time right now",
+    objReply: "Of course — could we find a convenient time next week for a quick chat instead?",
   };
-  const contact = client.contact || "স্যার/ম্যাম";
+  const contact = client.contact || "there";
   const company = client.name;
   const industry = client.industry || "business";
 
   return {
     OPENING:
-`আস্সালামু আলাইকুম / নমস্কার।
+`Hi, may I speak with ${contact}?
 
-আমি ${biz.name} থেকে বলছি। আপনি কি ${contact} বলছেন?
-
-(হ্যাঁ বললে)
-${contact}, আমি জানি আপনি অনেক ব্যস্ত। মাত্র ২ মিনিট সময় দিলে একটি গুরুত্বপূর্ণ বিষয় শেয়ার করতে চাই — আপনি কি এখন কথা বলতে পারবেন?`,
+(once connected)
+Hi ${contact}, this is { your name } from ${biz.name}. I know you weren't expecting my call, so I'll keep it quick — do you have a couple of minutes? I think there's something here that could really help ${company}.`,
 
     HOOK:
-`${company}-এর মতো ${industry} company গুলো প্রায়ই ${ind.pain}-এর challenge face করে।
+`A lot of ${industry} companies like ${company} run into the same challenge: ${ind.pain}.
 
-আমরা এই ধরনের অনেক company-কে সাহায্য করেছি এবং তারা উল্লেখযোগ্য results পেয়েছেন।
+We've helped businesses in exactly that situation, and they've seen some real results.
 
-আপনারাও কি এই বিষয়গুলো নিয়ে কাজ করছেন?`,
+Is that something you're working on at the moment as well?`,
 
     PITCH:
-`আমরা ${biz.service} provide করি, যা ${ind.benefit} সাহায্য করে।
+`We provide ${biz.service}, which helps you ${ind.benefit}.
 
-${company}-এর জন্য আমরা বিশেষভাবে offer করছি:
+For ${company} specifically, we're offering:
   ✦ ${biz.offer}
 
-এটি একটি risk-free সুযোগ। প্রথমে দেখুন, তারপর সিদ্ধান্ত নিন।
-আমাদের clients সাধারণত ৩–৬ মাসের মধ্যে উল্লেখযোগ্য পরিবর্তন অনুভব করেন।`,
+It's a risk-free way to start — take a look first, then decide. Most of our clients see a noticeable difference within 3 to 6 months.`,
 
     "OBJECTION HANDLING":
-`Objection ও Response Guide:
+`Objection & Response Guide:
 
-❶ যদি বলেন: "${ind.objection}"
+❶ If they say: "${ind.objection}"
    → ${ind.objReply}
 
-❷ যদি বলেন: "আমাদের budget নেই"
-   → "আমি বুঝতে পারছি। তাই আমরা flexible payment option রেখেছি। আর ${biz.offer} — এটা risk ছাড়াই শুরু করার সুযোগ দেয়।"
+❷ If they say: "We don't have the budget"
+   → "I understand completely. That's why we keep flexible payment options — and with ${biz.offer}, there's a risk-free way to get started."
 
-❸ যদি বলেন: "পরে call করুন"
-   → "অবশ্যই! কবে call করলে আপনার সুবিধা হবে? আগামী সপ্তাহে Tuesday বা Wednesday কেমন?"
+❸ If they say: "Call me back later"
+   → "Of course — when works best for you? Would sometime next Tuesday or Wednesday suit you?"
 
-❹ যদি বলেন: "আমি জানি না, দেখি"
-   → "একদম ঠিক আছে। একটি ছোট meeting-এ সব details দেখলে সিদ্ধান্ত নেওয়া সহজ হবে — মাত্র ১৫ মিনিট।"`,
+❹ If they say: "I'm not sure, let me think about it"
+   → "That's totally fair. A short meeting where you can see all the details usually makes the decision much easier — it only takes 15 minutes."`,
 
     "MEETING CLOSE":
-`${contact}, আপনার সাথে কথা বলে অনেক ভালো লাগলো।
+`${contact}, it's been great talking with you.
 
-আপনার সুবিধামতো সময়ে একটি ছোট ১৫–২০ মিনিটের meeting করতে পারি?
-সেখানে আমরা ${company}-এর specific situation অনুযায়ী একটি customized plan present করব।
+Could we set up a short 15–20 minute meeting at a time that works for you? I'll put together a plan tailored to ${company}'s specific situation.
 
-এই সপ্তাহে বা আগামী সপ্তাহে — কোন দিন এবং সময় আপনার জন্য সুবিধাজনক?
-(Phone / Zoom / সরাসরি — যেটা আপনার জন্য ভালো)`,
+Would later this week or early next week work better for you?
+(Phone, Zoom, or in person — whatever's easiest for you.)`,
 
     CLOSING:
-`অনেক ধন্যবাদ আপনার মূল্যবান সময়ের জন্য।
+`Thank you so much for your time.
 
-Meeting confirm হলে আমি { meeting এর তারিখ ও সময় বলুন }-এ একটি reminder পাঠাব।
+Once we confirm the meeting, I'll send a reminder for { date & time of the meeting }.
 
-আমার contact নম্বর: { আপনার নিজের ফোন নম্বর বলুন }
-যেকোনো প্রশ্নে সরাসরি call করতে পারেন।
+My direct number is { your phone number } — feel free to call anytime if anything comes up.
 
-আপনার একটি সুন্দর দিন হোক।
-আস্সালামু আলাইকুম।
+Have a great rest of your day!
 
 ─────────────────────────────
-💡 দ্রষ্টব্য: { } চিহ্নিত অংশগুলো call করার সময় নিজে বলুন।`,
+💡 Note: fill in the parts marked with { } during the call.`,
   };
 }
 
@@ -266,6 +260,11 @@ function statusLabel(status) {
   return status === "converted" ? "Lead" : status === "follow-up" ? "Follow-up" : status === "not-interested" ? "Declined" : "New";
 }
 
+function aiStatusLabel(s) {
+  const map = { queued: "Queued…", initiated: "Connecting…", ringing: "Ringing…", "in-progress": "On the call…", answered: "On the call…" };
+  return map[s] || (s || "Starting…");
+}
+
 // ── Toast component ───────────────────────────────────────────────────────────
 function ToastList({ toasts }) {
   if (!toasts.length) return null;
@@ -309,9 +308,12 @@ export default function App() {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [aiCalling, setAiCalling] = useState(false);
   const [aiResult, setAiResult] = useState(null);
+  const [aiStatus, setAiStatus] = useState("");
+  const [aiTranscript, setAiTranscript] = useState([]);
   const fileRef = useRef();
   const timerRef = useRef();
   const aiPollRef = useRef();
+  const aiPollCountRef = useRef(0);
 
   const selectedClient = clients.find((c) => c.id === selected);
 
@@ -336,6 +338,8 @@ export default function App() {
     setNoteInput("");
     setAiCalling(false);
     setAiResult(null);
+    setAiStatus("");
+    setAiTranscript([]);
     clearInterval(aiPollRef.current);
   }, [selected]);
 
@@ -370,23 +374,39 @@ export default function App() {
     e.target.value = "";
   }
 
-  function handleGenerateScript() {
+  // Build a script for a client. Tries the AI backend (translates ANY input
+  // language → English); falls back to the offline English template engine.
+  async function requestScript(client) {
+    try {
+      const res = await fetch(`${API_URL}/api/generate-script`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: client.name, contact: client.contact, industry: client.industry, businessInfo }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.script && typeof data.script === "object" && Object.keys(data.script).length) {
+          return { script: data.script, source: "ai" };
+        }
+      }
+    } catch { /* backend offline → fall back below */ }
+    return { script: generateScript(client, businessInfo), source: "template" };
+  }
+
+  async function handleGenerateScript() {
     if (!selectedClient || !businessInfo.trim()) {
       toast("Fill in your business info first", "warn");
       return;
     }
     setLoading(true);
-    // Small delay so the spinner renders before the sync work
-    setTimeout(() => {
-      try {
-        const script = generateScript(selectedClient, businessInfo);
-        setClients((prev) => prev.map((c) => (c.id === selected ? { ...c, script } : c)));
-        toast("Script generated");
-      } catch {
-        toast("Script generation failed — please try again", "error");
-      }
-      setLoading(false);
-    }, 600);
+    try {
+      const { script, source } = await requestScript(selectedClient);
+      setClients((prev) => prev.map((c) => (c.id === selected ? { ...c, script } : c)));
+      toast(source === "ai" ? "Script generated in English" : "Script generated (offline template)");
+    } catch {
+      toast("Script generation failed — please try again", "error");
+    }
+    setLoading(false);
   }
 
   // ── Start an autonomous AI phone call via the backend ─────────────────────
@@ -394,10 +414,12 @@ export default function App() {
     if (!selectedClient) return;
     let script = selectedClient.script;
     if (!script) {
-      script = generateScript(selectedClient, businessInfo);
+      script = (await requestScript(selectedClient)).script;
       setClients((prev) => prev.map((c) => (c.id === selected ? { ...c, script } : c)));
     }
     setAiResult(null);
+    setAiStatus("queued");
+    setAiTranscript([]);
     setAiCalling(true);
     try {
       const res = await fetch(`${API_URL}/api/ai-call`, {
@@ -425,12 +447,24 @@ export default function App() {
 
   function pollAiCall(callId, clientId) {
     clearInterval(aiPollRef.current);
+    aiPollCountRef.current = 0;
     aiPollRef.current = setInterval(async () => {
+      // Client-side safety: stop after ~6 min even if the server goes quiet.
+      if (++aiPollCountRef.current > 90) {
+        clearInterval(aiPollRef.current);
+        setAiCalling(false);
+        toast("AI call timed out — check the server logs", "warn");
+        return;
+      }
       try {
         const res = await fetch(`${API_URL}/api/ai-call/${callId}`);
         if (!res.ok) return;
         const data = await res.json();
-        if (data.status === "completed" && data.result) {
+        if (data.twilioStatus || data.status) setAiStatus(data.twilioStatus || data.status);
+        if (Array.isArray(data.transcript)) setAiTranscript(data.transcript);
+        // The server sets `result` on every terminal state (answered, no-answer, busy, failed),
+        // so polling on its presence handles success AND failure uniformly.
+        if (data.result) {
           clearInterval(aiPollRef.current);
           setAiCalling(false);
           setAiResult(data.result);
@@ -441,22 +475,29 @@ export default function App() {
   }
 
   function applyAiResult(clientId, result) {
+    // No real conversation (no answer / busy / failed) → keep them in the pipeline to retry.
+    const noConversation = !result.transcript || !result.transcript.trim();
     const status = result.meetingRequested || result.isLead
       ? "converted"
-      : result.interestLevel === "low" ? "follow-up" : "not-interested";
-    const ts = new Date().toLocaleString("en-BD", { dateStyle: "short", timeStyle: "short" });
+      : noConversation || result.interestLevel === "low"
+        ? "follow-up"
+        : "not-interested";
+    const ts = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short" });
     const parts = [`[${ts}] 🤖 AI call: ${result.summary || "(no summary)"}`];
     if (result.meetingTime) parts.push(`Meeting: ${result.meetingTime}`);
     const entry = parts.join(" | ");
     setClients((prev) =>
       prev.map((c) => (c.id === clientId ? { ...c, status, notes: c.notes ? c.notes + "\n" + entry : entry } : c))
     );
-    toast(result.meetingRequested ? "Meeting booked by AI ✓" : result.isLead ? "Lead captured by AI ✓" : "AI call finished");
+    if (result.meetingRequested) toast("Meeting booked by AI ✓");
+    else if (result.isLead) toast("Lead captured by AI ✓");
+    else if (noConversation) toast(result.summary || "No answer — marked for follow-up", "warn");
+    else toast("AI call finished");
   }
 
   function saveNote() {
     if (!noteInput.trim() || !selected) return;
-    const ts = new Date().toLocaleString("en-BD", { dateStyle: "short", timeStyle: "short" });
+    const ts = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short" });
     const entry = `[${ts}] ${noteInput.trim()}`;
     setClients((prev) =>
       prev.map((c) => (c.id === selected ? { ...c, notes: c.notes ? c.notes + "\n" + entry : entry } : c))
@@ -589,7 +630,7 @@ export default function App() {
             ↓ Export
           </button>
           <div style={{ background: `${ACCENT}22`, color: ACCENT, border: `1px solid ${ACCENT}44`, borderRadius: "4px", padding: "4px 10px", fontSize: "10px", letterSpacing: "0.08em" }}>
-            TEMPLATE ENGINE
+            ANY LANG → EN
           </div>
         </div>
       </div>
@@ -602,7 +643,7 @@ export default function App() {
 
           {/* Business info */}
           <div style={{ padding: "16px", borderBottom: `1px solid ${BORDER}` }}>
-            <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: MUTED, textTransform: "uppercase", marginBottom: "8px" }}>Your Business</div>
+            <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: MUTED, textTransform: "uppercase", marginBottom: "8px" }}>Your Business · any language</div>
             <textarea
               style={{ ...inp, height: "110px", resize: "none", lineHeight: "1.7" }}
               value={businessInfo}
@@ -741,7 +782,7 @@ export default function App() {
               <div style={{ fontSize: "14px", color: TEXT }}>Select a client to start calling</div>
               <div style={{ fontSize: "11px" }}>Upload your CSV or use the sample clients on the left</div>
               <div style={{ fontSize: "10px", marginTop: "4px", padding: "8px 16px", background: `${ACCENT}0A`, border: `1px solid ${ACCENT}22`, borderRadius: "6px", color: ACCENT, maxWidth: "320px", textAlign: "center", lineHeight: "1.7" }}>
-                Scripts are generated instantly — no internet or API key needed
+                Enter your business info in any language — scripts are written in English
               </div>
             </div>
           ) : (
@@ -852,10 +893,21 @@ export default function App() {
 
                 {/* AI call in progress */}
                 {aiCalling && (
-                  <div style={{ background: `${INFO}0A`, border: `1px solid ${INFO}44`, borderRadius: "8px", padding: "14px 18px", marginBottom: "16px", display: "flex", alignItems: "center", gap: "12px" }}>
-                    <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: INFO, animation: "pulse 1s infinite", flexShrink: 0, display: "inline-block" }} />
-                    <span style={{ fontSize: "12px", color: INFO, letterSpacing: "0.1em" }}>🤖 AI AGENT ON CALL</span>
-                    <span style={{ fontSize: "11px", color: MUTED, marginLeft: "auto" }}>{selectedClient.name} · {selectedClient.phone}</span>
+                  <div style={{ background: `${INFO}0A`, border: `1px solid ${INFO}44`, borderRadius: "8px", padding: "14px 18px", marginBottom: "16px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                      <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: INFO, animation: "pulse 1s infinite", flexShrink: 0, display: "inline-block" }} />
+                      <span style={{ fontSize: "12px", color: INFO, letterSpacing: "0.1em" }}>🤖 AI AGENT · {aiStatusLabel(aiStatus).toUpperCase()}</span>
+                      <span style={{ fontSize: "11px", color: MUTED, marginLeft: "auto" }}>{selectedClient.name} · {selectedClient.phone}</span>
+                    </div>
+                    {aiTranscript.length > 0 && (
+                      <div style={{ marginTop: "12px", borderTop: `1px solid ${INFO}22`, paddingTop: "10px", maxHeight: "180px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px" }}>
+                        {aiTranscript.map((t, i) => (
+                          <div key={i} style={{ fontSize: "12px", lineHeight: "1.6", color: t.role === "agent" ? TEXT : MUTED }}>
+                            <span style={{ color: t.role === "agent" ? INFO : ACCENT, fontWeight: "600" }}>{t.role === "agent" ? "Agent" : "Prospect"}:</span> {t.text}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -913,10 +965,10 @@ export default function App() {
                     <div style={{ fontSize: "13px", marginBottom: "8px", color: TEXT }}>No script generated yet</div>
                     <div style={{ fontSize: "11px", lineHeight: "1.7" }}>
                       Click <span style={{ color: ACCENT }}>"⚡ Generate Script"</span> to create a personalized
-                      <br />Bangla cold call script for {selectedClient.name}
+                      <br />English cold call script for {selectedClient.name}
                     </div>
                     <div style={{ fontSize: "10px", marginTop: "16px", color: MUTED }}>
-                      Scripts use your business info + industry-specific templates — no API needed
+                      Write your business info in any language → English script. Falls back to an offline template if the AI backend is offline.
                     </div>
                   </div>
                 )}
