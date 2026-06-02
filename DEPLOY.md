@@ -125,15 +125,19 @@ call prints a `[call <id>]` trace. A **healthy** call looks like:
 
 Match what you see to the fix:
 
+The bridge uses OpenAI's **GA Realtime API** and auto-tries `gpt-realtime` →
+`gpt-realtime-mini` → `gpt-4o-realtime-preview`. When the AI fails, the app's call
+result also shows the reason (e.g. `AI error: ...`). Match the logs to the fix:
+
 | What the logs show | Cause & fix |
 |---|---|
-| `OpenAI ws closed (code=... reason="...invalid api key...")` | Wrong/empty OpenAI key. Re-check it in ⚙ Settings. |
-| `OpenAI ws closed` with a *model* / *access* reason | Your key can't use the realtime model. Set `OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview` (or a dated id like `...-2024-12-17`) and redeploy. |
+| `OpenAI ws closed` with *invalid api key* | Wrong/empty OpenAI key. Re-check it in ⚙ Settings. |
+| `OpenAI ws closed` with a *model* / *access* reason on all 3 models | Your key has no Realtime access, or none of those model names exist for you. Set `OPENAI_REALTIME_MODEL` to a model you can use and redeploy. |
 | `✗ no callId in Twilio customParameters` / `unknown callId` | The stream couldn't be mapped — usually a stale deploy. Redeploy the latest code. |
 | **No** `Twilio stream started` line at all | Twilio can't reach your websocket. Check `PUBLIC_URL` is your real public **https** URL, and that the host allows websockets. On Render free tier, the first call after idle is slow (cold start) — try again once it's warm. |
-| `▶ first audio frame sent to Twilio` appears, but you still hear nothing | Audio is flowing out; the issue is on the telephony side. Confirm the **From** number is voice-capable, check Twilio's own call logs in the console, and (on trial) that the destination is a **verified** number. |
+| `▶ first audio frame → Twilio` appears, but you still hear nothing | Audio is flowing out; the issue is on the telephony side. Confirm the **From** number is voice-capable, check Twilio's own call logs, and (on trial) that the destination is a **verified** number. |
 
-Most "silent agent" cases are the **realtime-model access** row — switch `OPENAI_REALTIME_MODEL`
+To use a cheaper model once it works, set `OPENAI_REALTIME_MODEL=gpt-realtime-mini`
 and redeploy. If you're stuck, copy the `[call ...]` log lines and share them.
 
 ## ⚠️ Compliance
