@@ -107,6 +107,35 @@ Open `https://<your-backend>/api/health`:
 2. **🤖 AI Call** → your phone rings → the AI greets you → talk to it.
 3. Watch the live status + transcript in the app; the outcome is saved to the client.
 
+## 🛠️ Troubleshooting: call connects but the AI is silent
+
+Open your backend's **logs** during a test call (Render → your service → **Logs**). Each
+call prints a `[call <id>]` trace. A **healthy** call looks like:
+
+```
+[call ab12] Twilio call created (sid=CA...); dialing +1... from +1...
+[call ab12] Twilio status: ringing
+[call ab12] Twilio stream started; format: {"encoding":"audio/x-mulaw","sampleRate":8000,...}
+[call ab12] connecting to OpenAI Realtime, model: gpt-4o-mini-realtime-preview
+[call ab12] OpenAI ws open → configuring session
+[call ab12] session ready → greeting; flushing N queued audio frames
+[call ab12] ▶ first audio frame sent to Twilio (agent is speaking)
+[call ab12] agent: Hi, this is ...
+```
+
+Match what you see to the fix:
+
+| What the logs show | Cause & fix |
+|---|---|
+| `OpenAI ws closed (code=... reason="...invalid api key...")` | Wrong/empty OpenAI key. Re-check it in ⚙ Settings. |
+| `OpenAI ws closed` with a *model* / *access* reason | Your key can't use the realtime model. Set `OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview` (or a dated id like `...-2024-12-17`) and redeploy. |
+| `✗ no callId in Twilio customParameters` / `unknown callId` | The stream couldn't be mapped — usually a stale deploy. Redeploy the latest code. |
+| **No** `Twilio stream started` line at all | Twilio can't reach your websocket. Check `PUBLIC_URL` is your real public **https** URL, and that the host allows websockets. On Render free tier, the first call after idle is slow (cold start) — try again once it's warm. |
+| `▶ first audio frame sent to Twilio` appears, but you still hear nothing | Audio is flowing out; the issue is on the telephony side. Confirm the **From** number is voice-capable, check Twilio's own call logs in the console, and (on trial) that the destination is a **verified** number. |
+
+Most "silent agent" cases are the **realtime-model access** row — switch `OPENAI_REALTIME_MODEL`
+and redeploy. If you're stuck, copy the `[call ...]` log lines and share them.
+
 ## ⚠️ Compliance
 Automated/AI cold calls are regulated (TCPA in the US, plus AI-disclosure and
 do-not-call rules in the UK/AU/NZ). Get consent where required, disclose the AI, honor

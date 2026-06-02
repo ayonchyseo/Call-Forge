@@ -306,6 +306,7 @@ app.post("/api/ai-call", async (req, res) => {
     }
     calls[callId].twilioSid = data.sid;
     saveCalls();
+    console.log(`[call ${callId}] Twilio call created (sid=${data.sid}); dialing ${number} from ${twFrom}`);
 
     // Safety net: force-finish + hang up if the call runs past the cap.
     setTimeout(() => {
@@ -332,6 +333,7 @@ app.post("/api/twilio-status", (req, res) => {
   if (!call) return;
   const status = req.body.CallStatus || "";
   call.twilioStatus = status;
+  console.log(`[call ${req.query.callId}] Twilio status: ${status}`);
   // Terminal states where the bridge may never have produced a transcript.
   if (["completed", "busy", "no-answer", "failed", "canceled"].includes(status)) {
     finalizeCall(call, `twilio-${status}`);
@@ -355,8 +357,13 @@ wss.on("connection", (twilioWs) => {
   let callId = null;
   let streamSid = null;
   let openaiWs = null;
-  let openaiReady = false;
-  const pending = []; // audio that arrives before OpenAI is ready
+  let openaiReady = false;   // true once the session is configured (safe to stream audio)
+  let greeted = false;
+  let responding = false;    // an assistant response is currently being generated
+  let framesToTwilio = 0;
+  const pending = [];        // caller audio that arrives before the session is ready
+
+  const log = (...a) => console.log(`[call ${callId || "?"}]`, ...a);
 
   function finalize(reason) {
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
@@ -366,11 +373,14 @@ wss.on("connection", (twilioWs) => {
   function connectOpenAI() {
     const call = calls[callId];
     const key = call?.openaiKey || OPENAI_API_KEY;
+    if (!key) { log("✗ no OpenAI key available — cannot start the agent"); return finalize("openai-error"); }
+    log("connecting to OpenAI Realtime, model:", REALTIME_MODEL);
     openaiWs = new WebSocket(`wss://api.openai.com/v1/realtime?model=${REALTIME_MODEL}`, {
       headers: { Authorization: `Bearer ${key}`, "OpenAI-Beta": "realtime=v1" },
     });
 
     openaiWs.on("open", () => {
+      log("OpenAI ws open → configuring session");
       openaiWs.send(JSON.stringify({
         type: "session.update",
         session: {
@@ -380,59 +390,97 @@ wss.on("connection", (twilioWs) => {
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
           input_audio_transcription: { model: "whisper-1" },
-          turn_detection: { type: "server_vad", silence_duration_ms: 600 },
+          turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600 },
         },
       }));
-      // greet first
-      openaiWs.send(JSON.stringify({ type: "response.create" }));
-      openaiReady = true;
-      while (pending.length) openaiWs.send(pending.shift());
     });
 
     openaiWs.on("message", (raw) => {
       let evt;
       try { evt = JSON.parse(raw.toString()); } catch { return; }
       const call = calls[callId];
-      if (evt.type === "response.audio.delta" && evt.delta && streamSid) {
-        twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: evt.delta } }));
-      } else if (evt.type === "input_audio_buffer.speech_started" && streamSid) {
-        // caller barged in — stop our current playback and cancel the in-flight response
-        twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
-        if (openaiWs?.readyState === WebSocket.OPEN) openaiWs.send(JSON.stringify({ type: "response.cancel" }));
-      } else if (evt.type === "conversation.item.input_audio_transcription.completed" && call) {
-        const t = (evt.transcript || "").trim();
-        if (t) call.transcript.push({ role: "prospect", text: t });
-        saveCalls();
-      } else if (evt.type === "response.audio_transcript.done" && call) {
-        const t = (evt.transcript || "").trim();
-        if (t) call.transcript.push({ role: "agent", text: t });
-        saveCalls();
-      } else if (evt.type === "error") {
-        console.warn("OpenAI realtime error:", evt.error?.message || evt.error);
+
+      switch (evt.type) {
+        case "session.updated":
+          // Session is now configured — safe to greet and to forward audio.
+          if (!greeted) {
+            greeted = true;
+            openaiReady = true;
+            log(`session ready → greeting; flushing ${pending.length} queued audio frames`);
+            // Nudge the model to speak first (don't wait for the prospect).
+            openaiWs.send(JSON.stringify({
+              type: "conversation.item.create",
+              item: { type: "message", role: "user", content: [{ type: "input_text", text: "The call just connected. Greet the person warmly and begin the conversation now." }] },
+            }));
+            openaiWs.send(JSON.stringify({ type: "response.create" }));
+            while (pending.length && openaiWs.readyState === WebSocket.OPEN) openaiWs.send(pending.shift());
+          }
+          break;
+        case "response.created":
+          responding = true;
+          break;
+        case "response.done":
+          responding = false;
+          break;
+        case "response.audio.delta":
+          if (evt.delta && streamSid) {
+            if (++framesToTwilio === 1) log("▶ first audio frame sent to Twilio (agent is speaking)");
+            twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: evt.delta } }));
+          }
+          break;
+        case "input_audio_buffer.speech_started":
+          // Prospect started talking — stop our playback, and cancel only if we're mid-response.
+          if (streamSid) twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
+          if (responding && openaiWs?.readyState === WebSocket.OPEN) openaiWs.send(JSON.stringify({ type: "response.cancel" }));
+          break;
+        case "conversation.item.input_audio_transcription.completed":
+          if (call) { const t = (evt.transcript || "").trim(); if (t) { call.transcript.push({ role: "prospect", text: t }); saveCalls(); log("prospect:", t); } }
+          break;
+        case "response.audio_transcript.done":
+          if (call) { const t = (evt.transcript || "").trim(); if (t) { call.transcript.push({ role: "agent", text: t }); saveCalls(); log("agent:", t); } }
+          break;
+        case "error":
+          log("✗ OpenAI error:", JSON.stringify(evt.error || evt));
+          break;
       }
     });
 
-    openaiWs.on("error", () => finalize("openai-error"));
-    openaiWs.on("close", () => { openaiReady = false; });
+    openaiWs.on("error", (err) => { log("✗ OpenAI ws error:", err?.message || err); finalize("openai-error"); });
+    openaiWs.on("close", (code, reasonBuf) => {
+      const reason = (reasonBuf && reasonBuf.toString()) || "";
+      log(`OpenAI ws closed (code=${code} reason="${reason}"); audio frames sent to Twilio: ${framesToTwilio}`);
+      openaiReady = false;
+    });
   }
 
   twilioWs.on("message", (raw) => {
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
-    if (msg.event === "start") {
-      streamSid = msg.start.streamSid;
-      callId = msg.start.customParameters?.callId;
-      if (callId && calls[callId]) connectOpenAI();
-    } else if (msg.event === "media") {
-      const append = JSON.stringify({ type: "input_audio_buffer.append", audio: msg.media.payload });
-      if (openaiReady && openaiWs?.readyState === WebSocket.OPEN) openaiWs.send(append);
-      else pending.push(append);
-    } else if (msg.event === "stop") {
-      finalize("twilio-stop");
+    switch (msg.event) {
+      case "connected":
+        break;
+      case "start":
+        streamSid = msg.start.streamSid;
+        callId = msg.start.customParameters?.callId;
+        log("Twilio stream started; format:", JSON.stringify(msg.start.mediaFormat || {}));
+        if (!callId) log("✗ no callId in Twilio customParameters — cannot map this stream to a call");
+        else if (!calls[callId]) log("✗ unknown callId from Twilio:", callId);
+        else connectOpenAI();
+        break;
+      case "media": {
+        const append = JSON.stringify({ type: "input_audio_buffer.append", audio: msg.media.payload });
+        if (openaiReady && openaiWs?.readyState === WebSocket.OPEN) openaiWs.send(append);
+        else pending.push(append);
+        break;
+      }
+      case "stop":
+        log("Twilio stream stopped");
+        finalize("twilio-stop");
+        break;
     }
   });
 
-  twilioWs.on("close", () => finalize("twilio-close"));
+  twilioWs.on("close", () => { log("Twilio ws closed"); finalize("twilio-close"); });
 });
 
 // ── serve the built frontend (single-command production) ────────────────────
