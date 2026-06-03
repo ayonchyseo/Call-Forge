@@ -101,9 +101,15 @@ async function analyzeTranscript(transcript, apiKey) {
   const key = apiKey || OPENAI_API_KEY;
   const fallback = { isLead: false, interestLevel: "none", meetingRequested: false, meetingTime: "", summary: "" };
   if (!transcript.trim() || !key) return fallback;
+  // Hard 25-second cap so a slow/unavailable API never hangs the result
+  // indefinitely — the frontend spins until result is set, so a hung
+  // analysis means the UI spinner never clears.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 25000);
   try {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
+      signal: abort.signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({
         model: ANALYSIS_MODEL,
@@ -119,6 +125,8 @@ async function analyzeTranscript(transcript, apiKey) {
     return { ...fallback, ...parsed };
   } catch {
     return { ...fallback, summary: "(analysis failed)" };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -437,6 +445,11 @@ wss.on("connection", (twilioWs) => {
           type: "realtime",
           instructions: call?.instructions || "You are a polite sales agent.",
           output_modalities: ["audio"],
+          // Explicitly request G.711 µ-law output so Twilio can play the
+          // agent audio without re-encoding. Without this, OpenAI may default
+          // to PCM16 which Twilio forwards to the phone as-is but at the wrong
+          // encoding, causing garbled / robotic audio heard by the prospect.
+          output_audio_format: "g711_ulaw",
           audio: {
             input: {
               format: { type: "audio/pcmu" },
