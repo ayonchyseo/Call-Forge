@@ -26,6 +26,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import * as store from "./store.js";
+import { setupAuth, requireAuth } from "./auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_FILE = path.join(__dirname, "data", "calls.json");
@@ -181,6 +183,9 @@ app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: false })); // Twilio status callbacks are form-encoded
 
+// Auth + admin-approval routes (/api/auth/*, /api/admin/*).
+setupAuth(app);
+
 app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
@@ -194,7 +199,7 @@ app.get("/api/health", (_req, res) => {
 
 // Generate a cold-call script in the target language from business info written
 // in ANY language. Key comes from the request (UI) or falls back to server env.
-app.post("/api/generate-script", async (req, res) => {
+app.post("/api/generate-script", requireAuth, async (req, res) => {
   const { name, contact, industry, businessInfo, openaiKey, targetLang, aiInstructions } = req.body || {};
   const key = openaiKey || OPENAI_API_KEY;
   if (!key) return res.status(503).json({ error: "No OpenAI key. Add it in Settings, or set OPENAI_API_KEY on the server." });
@@ -241,7 +246,7 @@ app.post("/api/generate-script", async (req, res) => {
 });
 
 // Start an outbound AI call via Twilio.
-app.post("/api/ai-call", async (req, res) => {
+app.post("/api/ai-call", requireAuth, async (req, res) => {
   const {
     clientId, name, contact, phone, industry, businessInfo, scriptText,
     openaiKey, twilioSid, twilioToken, twilioFrom, targetLang, aiInstructions,
@@ -348,7 +353,7 @@ app.post("/api/twilio-status", (req, res) => {
   saveCalls();
 });
 
-app.get("/api/ai-call/:callId", (req, res) => {
+app.get("/api/ai-call/:callId", requireAuth, (req, res) => {
   const call = calls[req.params.callId];
   if (!call) return res.status(404).json({ error: "Unknown call id" });
   // Never echo secrets back to the client.
@@ -538,6 +543,12 @@ if (fs.existsSync(DIST_DIR)) {
     res.sendFile(path.join(DIST_DIR, "index.html"));
   });
 }
+
+// Initialize the user store (DB/file + admin seed) before accepting traffic.
+store.init().catch((err) => {
+  console.error("✗ User store failed to initialize:", err.message);
+  console.error("   Auth/login will not work. Check DATABASE_URL, or unset it to use the file store.");
+});
 
 server.listen(PORT, () => {
   console.log(`CallForge AI-call backend (Twilio + OpenAI) on http://localhost:${PORT}`);

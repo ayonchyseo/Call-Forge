@@ -9,6 +9,7 @@ calling to the **US, UK, AU, and NZ**.
 
 ## Features
 
+- 🔐 **Accounts & admin approval** — Users sign up with email + password, then an **admin approves** them before they can sign in (no email verification needed). Admins get a built-in user-management panel.
 - 📋 **Client Management** — Upload clients via CSV or add them manually
 - 🌐 **Any-language → your-language scripts** — Enter business info in any language; CallForge writes a structured script in the language you pick. Works offline too via a built-in template engine.
 - ⚙ **In-app Settings** — Save your OpenAI/Twilio keys, target language, AI call instructions, and backend URL right in the browser (no `.env` editing required).
@@ -17,6 +18,48 @@ calling to the **US, UK, AU, and NZ**.
 - 📊 **Lead Status & Live Stats** — Track Lead ✓ / Follow-up ↺ / Declined ✗ with at-a-glance conversion counts
 - ↓ **Export** — Download all clients, statuses, and notes as CSV
 - ❓ **Built-in Help** — A "How to use" guide is one click away in the header
+
+## Accounts & admin approval
+
+CallForge is gated behind a login. The flow is deliberately simple — **no email
+verification**; an admin manually approves each new account:
+
+1. A new user opens the app and **creates an account** (email + password).
+2. The account starts as **`pending`** — they can't sign in yet.
+3. An **admin** opens the **◇ Admin** panel (top-right) and clicks **✓ Approve**.
+4. The user can now **sign in** and use the dashboard.
+
+Admins can also decline, re-approve, promote/demote (client ↔ admin), or delete users.
+
+### First admin
+
+On first start the server **ensures one admin exists** so you can approve everyone else.
+Set these on the server (Render dashboard, `server/.env`, etc.):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `ADMIN_EMAIL` | `admin@callforge.app` | The seeded admin's login email |
+| `ADMIN_PASSWORD` | `changeme123` | **Change this** — set a strong password before going live |
+
+If you don't set them, a default admin is created and its credentials are printed in
+the server logs on first boot. Log in as that admin, then create/approve real accounts.
+
+### Where accounts are stored (durability)
+
+The accounts layer works two ways automatically:
+
+| Mode | When | Durability |
+|---|---|---|
+| **Postgres** | `DATABASE_URL` is set | ✅ Durable — survives redeploys. **Use this in production.** |
+| **JSON file** | no `DATABASE_URL` | ⚠️ Stored at `server/data/users.json`. Fine for local/dev, but **wiped on every redeploy** on hosts like Render. |
+
+For a real, sellable deployment, create a free Postgres database (Neon, Supabase, Render
+Postgres, …) and set `DATABASE_URL` — approved accounts will then persist. Also set
+`JWT_SECRET` to a long random string so logins survive restarts.
+
+> Client data (clients, scripts, notes, API keys) is currently stored **per-account in the
+> browser** (namespaced by user), so each approved user manages their own list on their own
+> device. Moving this data server-side per account is a natural next step.
 
 ## How script generation works
 
@@ -97,6 +140,10 @@ npm run server                        # backend on :8787
 | `TWILIO_AUTH_TOKEN` | calls | |
 | `TWILIO_FROM_NUMBER` | calls | your Twilio voice number, E.164 e.g. `+15551234567` |
 | `PUBLIC_URL` | calls | public https URL Twilio can reach — **must be set on the server** |
+| `DATABASE_URL` | durable accounts | Postgres connection string. Without it, accounts use an ephemeral file. **Set in production.** |
+| `JWT_SECRET` | login sessions | long random string so logins survive restarts |
+| `ADMIN_EMAIL` | first admin | seeded admin login (default `admin@callforge.app`) |
+| `ADMIN_PASSWORD` | first admin | seeded admin password — **change it** (default `changeme123`) |
 
 Per-request keys from Settings take priority over `server/.env`. `PUBLIC_URL` is the one
 value only the backend can provide. Hit `http://localhost:8787/api/health` to check config.
