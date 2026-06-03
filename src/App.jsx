@@ -672,7 +672,22 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
       }
       try {
         const res = await fetch(`${apiBase}/api/ai-call/${callId}`, { headers: { Authorization: `Bearer ${token}` } });
-        if (!res.ok) return;
+        // 401 = session expired; 404 = call id unknown (server restarted).
+        // Both are unrecoverable — stop spinning and tell the user.
+        if (res.status === 401) {
+          clearInterval(aiPollRef.current);
+          setAiCalling(false);
+          toast("Session expired — please sign in again.", "error");
+          onLogout();
+          return;
+        }
+        if (res.status === 404) {
+          clearInterval(aiPollRef.current);
+          setAiCalling(false);
+          toast("Call record not found — the server may have restarted.", "warn");
+          return;
+        }
+        if (!res.ok) return; // other transient errors — keep polling
         const data = await res.json();
         if (data.twilioStatus || data.status) setAiStatus(data.twilioStatus || data.status);
         if (Array.isArray(data.transcript)) setAiTranscript(data.transcript);
@@ -684,7 +699,7 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
           setAiResult(data.result);
           applyAiResult(clientId, data.result);
         }
-      } catch { /* keep polling */ }
+      } catch { /* network blip — keep polling */ }
     }, 4000);
   }
 

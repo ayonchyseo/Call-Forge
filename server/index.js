@@ -101,9 +101,15 @@ async function analyzeTranscript(transcript, apiKey) {
   const key = apiKey || OPENAI_API_KEY;
   const fallback = { isLead: false, interestLevel: "none", meetingRequested: false, meetingTime: "", summary: "" };
   if (!transcript.trim() || !key) return fallback;
+  // Hard 25-second cap so a slow/unavailable API never hangs the result
+  // indefinitely — the frontend spins until result is set, so a hung
+  // analysis means the UI spinner never clears.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 25000);
   try {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
+      signal: abort.signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({
         model: ANALYSIS_MODEL,
@@ -119,6 +125,8 @@ async function analyzeTranscript(transcript, apiKey) {
     return { ...fallback, ...parsed };
   } catch {
     return { ...fallback, summary: "(analysis failed)" };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -430,12 +438,18 @@ wss.on("connection", (twilioWs) => {
     ws.on("open", () => {
       log("OpenAI ws open → sending GA session.update");
       // GA session shape: audio.input/output with object formats; pcmu = G.711 µ-law (Twilio).
+      // (Verified against live call logs — this is the correct current GA format.)
       ws.send(JSON.stringify({
         type: "session.update",
         session: {
           type: "realtime",
           instructions: call?.instructions || "You are a polite sales agent.",
           output_modalities: ["audio"],
+          // Explicitly request G.711 µ-law output so Twilio can play the
+          // agent audio without re-encoding. Without this, OpenAI may default
+          // to PCM16 which Twilio forwards to the phone as-is but at the wrong
+          // encoding, causing garbled / robotic audio heard by the prospect.
+          output_audio_format: "g711_ulaw",
           audio: {
             input: {
               format: { type: "audio/pcmu" },
@@ -481,8 +495,18 @@ wss.on("connection", (twilioWs) => {
           }
           break;
         case "input_audio_buffer.speech_started":
+          // Barge-in: the prospect started talking. Flush the agent audio already
+          // queued on Twilio so playback stops instantly, and cancel the in-flight
+          // OpenAI response so the agent stops generating more.
           if (streamSid && twilioWs.readyState === WebSocket.OPEN) twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
-          if (responding && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "response.cancel" }));
+          if (responding && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "response.cancel" }));
+            // A response can only be cancelled once. Clearing the flag here stops
+            // repeated speech_started events from firing duplicate cancels, which
+            // produced a stream of "response_cancel_not_active" errors and made the
+            // agent talk over the prospect.
+            responding = false;
+          }
           break;
         case "conversation.item.input_audio_transcription.completed":
           if (call) { const t = (evt.transcript || "").trim(); if (t) { call.transcript.push({ role: "prospect", text: t }); saveCalls(); log("prospect:", t); } }
@@ -492,6 +516,10 @@ wss.on("connection", (twilioWs) => {
           if (call) { const t = (evt.transcript || "").trim(); if (t) { call.transcript.push({ role: "agent", text: t }); saveCalls(); log("agent:", t); } }
           break;
         case "error":
+          // "response_cancel_not_active" is a benign race: we asked to cancel a
+          // response that already finished on its own. Ignore it so it doesn't spam
+          // the logs or get mis-reported as the call's failure reason.
+          if (evt.error?.code === "response_cancel_not_active") break;
           // Log + record but don't cycle here: real connection failures (bad model,
           // no access, retired protocol) surface as a ws "close", handled below.
           log("✗ OpenAI error event:", JSON.stringify(evt.error || evt));
