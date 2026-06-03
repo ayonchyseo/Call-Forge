@@ -166,10 +166,18 @@ function finalizeCall(call, reason) {
   call.endedReason = reason || "";
   const text = call.transcript.map((t) => `${t.role}: ${t.text}`.trim()).filter(Boolean).join("\n");
   if (text.trim()) {
-    analyzeTranscript(text, call.openaiKey).then((analysis) => {
-      call.result = { ...analysis, transcript: text, endedReason: reason || "" };
-      saveCalls();
-    });
+    analyzeTranscript(text, call.openaiKey)
+      .then((analysis) => {
+        call.result = { ...analysis, transcript: text, endedReason: reason || "" };
+        saveCalls();
+      })
+      // A rejection here used to be unhandled and could take the whole server
+      // down (Node >=22 exits on unhandled rejections). Never let analysis crash the process.
+      .catch((err) => {
+        console.error("analyzeTranscript failed:", err?.message || err);
+        call.result = { ...cannedOutcome(reason), transcript: text, endedReason: reason || "" };
+        saveCalls();
+      });
   } else {
     const base = cannedOutcome(reason);
     if (call.lastError) base.summary = `AI error: ${call.lastError}`;
@@ -464,13 +472,16 @@ wss.on("connection", (twilioWs) => {
         // GA emits response.output_audio.delta; accept the old name too just in case.
         case "response.output_audio.delta":
         case "response.audio.delta":
-          if (evt.delta && streamSid) {
+          // Guard readyState: the prospect may hang up (Twilio socket closes) while
+          // OpenAI is still streaming audio. send() on a closed socket throws, and an
+          // unguarded throw here crashed the whole server.
+          if (evt.delta && streamSid && twilioWs.readyState === WebSocket.OPEN) {
             if (++framesToTwilio === 1) log("▶ first audio frame → Twilio (agent is speaking)");
             twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: evt.delta } }));
           }
           break;
         case "input_audio_buffer.speech_started":
-          if (streamSid) twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
+          if (streamSid && twilioWs.readyState === WebSocket.OPEN) twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
           if (responding && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "response.cancel" }));
           break;
         case "conversation.item.input_audio_transcription.completed":
@@ -545,6 +556,27 @@ if (fs.existsSync(DIST_DIR)) {
     res.sendFile(path.join(DIST_DIR, "index.html"));
   });
 }
+
+// Express error handler — a thrown (synchronous) route error becomes a JSON 500
+// instead of a hung request. Must be registered after all routes.
+app.use((err, _req, res, _next) => {
+  console.error("✗ Request error:", err?.stack || err?.message || err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: "Server error — please try again." });
+});
+
+// ── last-resort safety nets ─────────────────────────────────────────────────
+// A single bad request, a dropped websocket, or a rejected background promise
+// must NEVER take the whole server down. Node >=22 EXITS the process on an
+// unhandled rejection/exception by default — and on an ephemeral host (e.g.
+// Render free) that restart wipes the user store, which is exactly what made
+// accounts vanish and logins fail right after placing a call. Log and stay up.
+process.on("unhandledRejection", (reason) => {
+  console.error("⚠ Unhandled promise rejection (server kept alive):", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("⚠ Uncaught exception (server kept alive):", err?.stack || err);
+});
 
 // Initialize the user store (DB/file + admin seed) before accepting traffic.
 store.init().catch((err) => {
