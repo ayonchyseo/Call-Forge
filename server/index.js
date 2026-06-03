@@ -511,6 +511,7 @@ wss.on("connection", (twilioWs) => {
       case "connected":
         break;
       case "start":
+        if (!msg.start) { log("✗ malformed 'start' event — missing start object"); break; }
         streamSid = msg.start.streamSid;
         callId = msg.start.customParameters?.callId;
         log("Twilio stream started; format:", JSON.stringify(msg.start.mediaFormat || {}));
@@ -519,6 +520,7 @@ wss.on("connection", (twilioWs) => {
         else connectOpenAI();
         break;
       case "media": {
+        if (!msg.media) break;
         const append = JSON.stringify({ type: "input_audio_buffer.append", audio: msg.media.payload });
         if (openaiReady && openaiWs?.readyState === WebSocket.OPEN) openaiWs.send(append);
         else pending.push(append);
