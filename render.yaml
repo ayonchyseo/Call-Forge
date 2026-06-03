@@ -20,6 +20,21 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
+      # Keeps login sessions valid across restarts. Render generates a random value.
+      - key: JWT_SECRET
+        generateValue: true
+      # ── Accounts & admin approval ─────────────────────────────────────────────
+      # DURABLE accounts: create a Postgres DB (Render Postgres / Neon / Supabase)
+      # and paste its connection string here. WITHOUT this, accounts live in an
+      # ephemeral file that is wiped on every redeploy — set it before going live.
+      # - key: DATABASE_URL
+      #   sync: false
+      # First admin (who approves everyone else). Change the password!
+      # If unset, a default admin is created and printed in the deploy logs.
+      # - key: ADMIN_EMAIL
+      #   sync: false
+      # - key: ADMIN_PASSWORD
+      #   sync: false
       # Optional — set your keys here instead of in the app's Settings.
       # In the Render dashboard these stay secret (sync: false).
       # - key: OPENAI_API_KEY

@@ -5,3 +5,4 @@ dist/
 .env.*.local
 server/.env
 server/data/calls.json
+server/data/users.json

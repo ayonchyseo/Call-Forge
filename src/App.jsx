@@ -1,14 +1,11 @@
 import { useState, useRef, useEffect } from "react";
-
-const ACCENT = "#00FF94";
-const BG = "#0A0A0F";
-const CARD = "#12121A";
-const BORDER = "#1E1E2E";
-const MUTED = "#4A4A6A";
-const TEXT = "#E8E8F0";
-const WARN = "#FFB800";
-const DANGER = "#FF4444";
-const INFO = "#7B8FFF";
+import AuthScreen from "./Auth.jsx";
+import AdminPanel from "./AdminPanel.jsx";
+import { getApiBase, setApiBase, getToken, setToken, apiJson } from "./api.js";
+import {
+  BG, CARD, BORDER, TEXT, MUTED, ACCENT, ACCENT_TEXT, WARN, DANGER, INFO,
+  SHADOW, SHADOW_LG, FONT, GLOBAL_CSS,
+} from "./theme.js";
 
 const DEFAULT_BUSINESS = `Business: SoftPulse Agency
 Service: Digital Marketing & Web Development
@@ -190,10 +187,8 @@ function scriptToText(script) {
     .join("\n\n");
 }
 
-// Where the backend lives. In dev → local server; in a production build → same
-// origin (so a single deployed service serving this UI just works). Override with
-// VITE_API_URL at build time or the Backend URL field in Settings.
-const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:8787" : "");
+// The backend base URL is resolved in api.js (same origin in production, or the
+// "Backend URL" override). getApiBase() reads it; Settings can change it.
 
 const DEFAULT_SETTINGS = {
   targetLang: "English",
@@ -336,10 +331,12 @@ function ToastList({ toasts }) {
           key={t.id}
           style={{
             padding: "10px 16px",
-            borderRadius: "6px",
-            fontSize: "12px",
-            fontFamily: "'DM Mono', monospace",
-            background: t.type === "error" ? `${DANGER}22` : t.type === "warn" ? `${WARN}22` : `${ACCENT}22`,
+            borderRadius: "10px",
+            fontSize: "13px",
+            fontWeight: 600,
+            fontFamily: FONT,
+            boxShadow: SHADOW,
+            background: t.type === "error" ? `${DANGER}18` : t.type === "warn" ? `${WARN}18` : `${ACCENT}18`,
             border: `1px solid ${t.type === "error" ? DANGER : t.type === "warn" ? WARN : ACCENT}66`,
             color: t.type === "error" ? DANGER : t.type === "warn" ? WARN : ACCENT,
             maxWidth: "300px",
@@ -361,8 +358,8 @@ const modalInp = {
 
 function Overlay({ title, onClose, children, footer }) {
   return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "#000A", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: "10px", width: "100%", maxWidth: "520px", maxHeight: "86vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(20,24,38,0.40)", backdropFilter: "blur(2px)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: "16px", boxShadow: SHADOW_LG, width: "100%", maxWidth: "520px", maxHeight: "86vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
           <div style={{ fontSize: "13px", color: ACCENT, letterSpacing: "0.1em" }}>{title}</div>
           <button onClick={onClose} style={{ background: "transparent", border: "none", color: MUTED, fontSize: "18px", cursor: "pointer", lineHeight: 1 }}>✕</button>
@@ -384,7 +381,7 @@ function Field({ label, hint, children }) {
   );
 }
 
-function SettingsModal({ settings, onSave, onClose }) {
+function SettingsModal({ settings, onSave, onClose, onReset }) {
   const [d, setD] = useState(settings);
   const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
   const btn = (bg, color, border) => ({ padding: "9px 18px", background: bg, border: `1px solid ${border}`, borderRadius: "6px", color, fontFamily: "inherit", fontSize: "12px", cursor: "pointer" });
@@ -435,12 +432,12 @@ function SettingsModal({ settings, onSave, onClose }) {
 
       <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: "18px", paddingTop: "14px" }}>
         <button
-          onClick={() => { if (window.confirm("Clear ALL saved data on this device (clients, notes, business info, keys) and reload?")) { localStorage.clear(); window.location.reload(); } }}
+          onClick={() => { if (window.confirm("Clear YOUR saved data on this device (clients, notes, business info, keys) and reload?")) onReset(); }}
           style={{ background: `${DANGER}11`, border: `1px solid ${DANGER}44`, borderRadius: "6px", color: DANGER, padding: "8px 14px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}
         >
-          Reset all app data
+          Reset my app data
         </button>
-        <div style={{ fontSize: "10px", color: MUTED, marginTop: "6px", lineHeight: 1.6 }}>Clears cached clients/notes/keys from this browser and reloads with fresh sample data.</div>
+        <div style={{ fontSize: "10px", color: MUTED, marginTop: "6px", lineHeight: 1.6 }}>Clears your cached clients/notes/keys from this browser and reloads with fresh sample data. Other accounts on this device are unaffected.</div>
       </div>
     </Overlay>
   );
@@ -478,11 +475,13 @@ function HelpModal({ onClose }) {
   );
 }
 
-// ── Main App ──────────────────────────────────────────────────────────────────
-export default function App() {
-  const [clients, setClients] = useState(() => loadState("cf_clients", SAMPLE_CLIENTS));
+// ── Dashboard (the CRM, shown to approved + logged-in users) ──────────────────
+function Dashboard({ user, token, onLogout, onOpenAdmin }) {
+  // Namespace this user's browser data so multiple accounts on one device stay separate.
+  const K = (k) => `cf_${user.id}_${k}`;
+  const [clients, setClients] = useState(() => loadState(K("clients"), SAMPLE_CLIENTS));
   const [selected, setSelected] = useState(null);
-  const [businessInfo, setBusinessInfo] = useState(() => loadState("cf_business", DEFAULT_BUSINESS));
+  const [businessInfo, setBusinessInfo] = useState(() => loadState(K("business"), DEFAULT_BUSINESS));
   const [loading, setLoading] = useState(false);
   const [noteInput, setNoteInput] = useState("");
   const [calling, setCalling] = useState(false);
@@ -496,7 +495,7 @@ export default function App() {
   const [aiResult, setAiResult] = useState(null);
   const [aiStatus, setAiStatus] = useState("");
   const [aiTranscript, setAiTranscript] = useState([]);
-  const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...loadState("cf_settings", {}) }));
+  const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...loadState(K("settings"), {}) }));
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const fileRef = useRef();
@@ -506,12 +505,22 @@ export default function App() {
 
   const selectedClient = clients.find((c) => c.id === selected);
 
-  // Persist data
-  useEffect(() => { saveState("cf_clients", clients); }, [clients]);
-  useEffect(() => { saveState("cf_business", businessInfo); }, [businessInfo]);
-  useEffect(() => { saveState("cf_settings", settings); }, [settings]);
+  // Persist data (per-user keys)
+  useEffect(() => { saveState(K("clients"), clients); }, [clients]);
+  useEffect(() => { saveState(K("business"), businessInfo); }, [businessInfo]);
+  useEffect(() => {
+    saveState(K("settings"), settings);
+    // Keep the global backend URL in sync so auth/admin calls use the same server.
+    if (settings.backendUrl && settings.backendUrl.trim()) setApiBase(settings.backendUrl);
+  }, [settings]);
 
-  const apiBase = (settings.backendUrl || "").trim().replace(/\/+$/, "") || API_URL;
+  const apiBase = (settings.backendUrl || "").trim().replace(/\/+$/, "") || getApiBase();
+
+  // Clear only THIS user's cached data, then reload with fresh samples.
+  function resetMyData() {
+    try { ["clients", "business", "settings"].forEach((k) => localStorage.removeItem(K(k))); } catch { /* ignore */ }
+    window.location.reload();
+  }
 
   // Call timer
   useEffect(() => {
@@ -580,7 +589,7 @@ export default function App() {
     try {
       const res = await fetch(`${apiBase}/api/generate-script`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ name: client.name, contact: client.contact, industry: client.industry, businessInfo, targetLang, aiInstructions }),
       });
       if (res.ok) {
@@ -624,7 +633,7 @@ export default function App() {
     try {
       const res = await fetch(`${apiBase}/api/ai-call`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           clientId: selectedClient.id,
           name: selectedClient.name,
@@ -642,6 +651,7 @@ export default function App() {
           aiInstructions: settings.aiInstructions,
         }),
       });
+      if (res.status === 401) { setAiCalling(false); toast("Session expired — please sign in again.", "error"); onLogout(); return; }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to start AI call");
       toast("AI call started — agent is dialing");
@@ -665,7 +675,7 @@ export default function App() {
         return;
       }
       try {
-        const res = await fetch(`${apiBase}/api/ai-call/${callId}`);
+        const res = await fetch(`${apiBase}/api/ai-call/${callId}`, { headers: { Authorization: `Bearer ${token}` } });
         if (!res.ok) return;
         const data = await res.json();
         if (data.twilioStatus || data.status) setAiStatus(data.twilioStatus || data.status);
@@ -807,29 +817,17 @@ export default function App() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: BG, color: TEXT, fontFamily: "'DM Mono', 'Courier New', monospace", display: "flex", flexDirection: "column" }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: ${BORDER}; border-radius: 2px; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
-        @keyframes slideIn { from { transform: translateX(20px); opacity:0; } to { transform:none; opacity:1; } }
-        button:hover { opacity: 0.85; }
-        button:active { opacity: 0.7; }
-        input::placeholder, textarea::placeholder { color: ${MUTED}; }
-      `}</style>
+    <div style={{ minHeight: "100vh", background: BG, color: TEXT, fontFamily: FONT, display: "flex", flexDirection: "column" }}>
+      <style>{GLOBAL_CSS}</style>
 
       <ToastList toasts={toasts} />
 
-      {showSettings && <SettingsModal settings={settings} onSave={(s) => { setSettings(s); toast("Settings saved"); }} onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsModal settings={settings} onSave={(s) => { setSettings(s); toast("Settings saved"); }} onClose={() => setShowSettings(false)} onReset={resetMyData} />}
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
 
       {/* ── Header ── */}
-      <div style={{ borderBottom: `1px solid ${BORDER}`, padding: "16px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", background: CARD, flexShrink: 0 }}>
-        <div style={{ fontSize: "16px", fontWeight: "700", letterSpacing: "0.12em", color: ACCENT }}>⬡ CALLFORGE</div>
+      <div style={{ borderBottom: `1px solid ${BORDER}`, padding: "14px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", background: CARD, boxShadow: SHADOW, position: "relative", zIndex: 5, flexShrink: 0 }}>
+        <div style={{ fontSize: "17px", fontWeight: "800", letterSpacing: "-0.01em", color: TEXT }}><span style={{ color: ACCENT }}>⬡</span> CallForge</div>
         <div style={{ display: "flex", gap: "20px", fontSize: "11px", color: MUTED }}>
           <span>Total <span style={{ color: TEXT }}>{stats.total}</span></span>
           <span>Leads <span style={{ color: ACCENT }}>{stats.converted}</span></span>
@@ -846,9 +844,19 @@ export default function App() {
           <button onClick={exportCSV} style={{ background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "5px", color: MUTED, padding: "5px 12px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>
             ↓ Export
           </button>
-          <div title={`Business info in any language → ${settings.targetLang} output`} style={{ background: `${ACCENT}22`, color: ACCENT, border: `1px solid ${ACCENT}44`, borderRadius: "4px", padding: "4px 10px", fontSize: "10px", letterSpacing: "0.08em" }}>
+          <div title={`Business info in any language → ${settings.targetLang} output`} style={{ background: `${ACCENT}18`, color: ACCENT, border: `1px solid ${ACCENT}44`, borderRadius: "20px", padding: "4px 11px", fontSize: "10px", fontWeight: 700, letterSpacing: "0.06em" }}>
             ANY LANG → {langShort(settings.targetLang)}
           </div>
+          <div style={{ width: "1px", height: "22px", background: BORDER, margin: "0 2px" }} />
+          {onOpenAdmin && (
+            <button onClick={onOpenAdmin} title="Admin panel" style={{ background: `${INFO}14`, border: `1px solid ${INFO}44`, borderRadius: "8px", color: INFO, padding: "5px 12px", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+              ◇ Admin
+            </button>
+          )}
+          <span title={user.email} style={{ fontSize: "11px", color: MUTED, fontWeight: 600, maxWidth: "150px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.email}</span>
+          <button onClick={onLogout} title="Log out" style={{ background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "8px", color: MUTED, padding: "5px 12px", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+            Log out
+          </button>
         </div>
       </div>
 
@@ -1055,8 +1063,8 @@ export default function App() {
                       padding: "9px 18px",
                       background: aiCalling ? `${INFO}22` : INFO,
                       border: `1px solid ${INFO}`,
-                      borderRadius: "6px",
-                      color: aiCalling ? INFO : "#000",
+                      borderRadius: "8px",
+                      color: aiCalling ? INFO : ACCENT_TEXT,
                       fontFamily: "inherit",
                       fontSize: "12px",
                       fontWeight: "700",
@@ -1086,7 +1094,7 @@ export default function App() {
                       style={{ textDecoration: "none" }}
                     >
                       <button
-                        style={{ padding: "9px 20px", background: ACCENT, border: "none", borderRadius: "6px", color: "#000", fontFamily: "inherit", fontSize: "12px", fontWeight: "700", cursor: "pointer", letterSpacing: "0.08em", minWidth: "120px" }}
+                        style={{ padding: "9px 20px", background: ACCENT, border: "none", borderRadius: "8px", color: ACCENT_TEXT, fontFamily: "inherit", fontSize: "12px", fontWeight: "700", cursor: "pointer", letterSpacing: "0.04em", minWidth: "120px", boxShadow: `0 4px 12px ${ACCENT}44` }}
                       >
                         📞 CALL NOW
                       </button>
@@ -1130,8 +1138,8 @@ export default function App() {
 
                 {/* AI call result */}
                 {aiResult && (
-                  <div style={{ background: CARD, border: `1px solid ${INFO}44`, borderRadius: "8px", padding: "18px 20px", marginBottom: "16px" }}>
-                    <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: INFO, textTransform: "uppercase", marginBottom: "10px" }}>🤖 AI Call Result</div>
+                  <div style={{ background: CARD, border: `1px solid ${INFO}44`, borderRadius: "14px", boxShadow: SHADOW, padding: "18px 20px", marginBottom: "16px" }}>
+                    <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: INFO, fontWeight: 700, textTransform: "uppercase", marginBottom: "10px" }}>🤖 AI Call Result</div>
                     <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" }}>
                       <span style={{ fontSize: "11px", padding: "2px 10px", borderRadius: "4px", background: aiResult.isLead ? `${ACCENT}22` : `${MUTED}22`, color: aiResult.isLead ? ACCENT : MUTED, border: `1px solid ${aiResult.isLead ? ACCENT : BORDER}` }}>
                         {aiResult.isLead ? "✓ Lead" : "Not a lead"}
@@ -1157,7 +1165,7 @@ export default function App() {
 
                 {/* Loading state */}
                 {loading && (
-                  <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: "8px", padding: "48px 24px", textAlign: "center", marginBottom: "16px" }}>
+                  <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: "14px", boxShadow: SHADOW, padding: "48px 24px", textAlign: "center", marginBottom: "16px" }}>
                     <div style={{ display: "inline-block", width: "22px", height: "22px", border: `2px solid ${ACCENT}33`, borderTop: `2px solid ${ACCENT}`, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
                     <div style={{ fontSize: "12px", color: MUTED, marginTop: "14px" }}>
                       Generating personalized script for {selectedClient.name}...
@@ -1168,8 +1176,8 @@ export default function App() {
                 {/* Script sections */}
                 {!loading && script && Object.entries(script).map(([section, text]) =>
                   text ? (
-                    <div key={section} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: "8px", padding: "18px 20px", marginBottom: "14px" }}>
-                      <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: MUTED, textTransform: "uppercase", marginBottom: "10px" }}>{section}</div>
+                    <div key={section} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: "14px", boxShadow: SHADOW, padding: "18px 20px", marginBottom: "14px" }}>
+                      <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: ACCENT, fontWeight: 700, textTransform: "uppercase", marginBottom: "10px" }}>{section}</div>
                       <div style={{ fontSize: "13px", lineHeight: "1.85", color: TEXT, whiteSpace: "pre-wrap" }}>{text}</div>
                     </div>
                   ) : null
@@ -1192,7 +1200,7 @@ export default function App() {
 
                 {/* Notes */}
                 {selectedClient.notes && (
-                  <div style={{ background: CARD, border: `1px solid ${WARN}33`, borderRadius: "8px", padding: "18px 20px", marginTop: "4px" }}>
+                  <div style={{ background: CARD, border: `1px solid ${WARN}44`, borderRadius: "14px", boxShadow: SHADOW, padding: "18px 20px", marginTop: "4px" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
                       <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: MUTED, textTransform: "uppercase" }}>Call Notes</div>
                       <button onClick={clearAllNotes} style={{ fontSize: "10px", color: MUTED, background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "4px", padding: "2px 8px", cursor: "pointer", fontFamily: "inherit" }}>
@@ -1253,5 +1261,57 @@ export default function App() {
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Top-level app: auth gate + role-based routing ─────────────────────────────
+// Not signed in → AuthScreen. Admins can toggle into the AdminPanel. Everyone
+// approved lands on the Dashboard.
+export default function App() {
+  const [token, setTok] = useState(() => getToken());
+  const [user, setUser] = useState(null);
+  const [ready, setReady] = useState(false);   // have we checked the saved token?
+  const [adminView, setAdminView] = useState(false);
+
+  // On load, validate any saved token and fetch the current user.
+  useEffect(() => {
+    let active = true;
+    if (!token) { setReady(true); return; }
+    apiJson("/api/auth/me", { token })
+      .then((d) => { if (active) setUser(d.user); })
+      .catch((err) => {
+        // Only forget the token on a real auth failure — keep it through network blips.
+        if (active && (err.status === 401 || err.status === 403)) { setToken(""); setTok(""); }
+      })
+      .finally(() => { if (active) setReady(true); });
+    return () => { active = false; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function handleLogin(tok, usr) {
+    setToken(tok); setTok(tok); setUser(usr); setAdminView(false);
+  }
+  function handleLogout() {
+    setToken(""); setTok(""); setUser(null); setAdminView(false);
+  }
+
+  if (!ready) {
+    return (
+      <div style={{ minHeight: "100vh", background: BG, fontFamily: FONT, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <style>{GLOBAL_CSS}</style>
+        <span style={{ display: "inline-block", width: "24px", height: "24px", border: `3px solid ${ACCENT}33`, borderTop: `3px solid ${ACCENT}`, borderRadius: "50%", animation: "spin .8s linear infinite" }} />
+      </div>
+    );
+  }
+  if (!user) return <AuthScreen onLogin={handleLogin} />;
+  if (user.role === "admin" && adminView) {
+    return <AdminPanel user={user} onBack={() => setAdminView(false)} onLogout={handleLogout} />;
+  }
+  return (
+    <Dashboard
+      user={user}
+      token={token}
+      onLogout={handleLogout}
+      onOpenAdmin={user.role === "admin" ? () => setAdminView(true) : null}
+    />
   );
 }
