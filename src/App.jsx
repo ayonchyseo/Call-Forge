@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import AuthScreen from "./Auth.jsx";
 import AdminPanel from "./AdminPanel.jsx";
-import { getApiBase, setApiBase, getToken, setToken, apiJson } from "./api.js";
+import { getApiBase, getToken, setToken, apiJson } from "./api.js";
 import {
   BG, CARD, BORDER, TEXT, MUTED, ACCENT, ACCENT_TEXT, WARN, DANGER, INFO,
   SHADOW, SHADOW_LG, FONT, GLOBAL_CSS,
@@ -187,8 +187,8 @@ function scriptToText(script) {
     .join("\n\n");
 }
 
-// The backend base URL is resolved in api.js (same origin in production, or the
-// "Backend URL" override). getApiBase() reads it; Settings can change it.
+// The backend base URL is resolved automatically in api.js — same origin in
+// production (Render serves UI + API) or VITE_API_URL at build time (Vercel).
 
 const DEFAULT_SETTINGS = {
   targetLang: "English",
@@ -197,7 +197,6 @@ const DEFAULT_SETTINGS = {
   twilioSid: "",
   twilioToken: "",
   twilioFrom: "",
-  backendUrl: "",
 };
 
 const LANGUAGES = ["English", "Spanish", "French", "German", "Portuguese", "Arabic", "Hindi", "Bangla", "Chinese", "Japanese"];
@@ -222,7 +221,7 @@ async function openaiGenerateScript({ client, businessInfo, openaiKey, targetLan
     'Return ONLY a JSON object with these exact string keys: "OPENING", "HOOK", "PITCH", "OBJECTION HANDLING", "MEETING CLOSE", "CLOSING".',
     "Each value is the spoken text for that phase — warm, concise, not robotic. Use { } placeholders for details the caller fills in live, e.g. { your name }.",
   ].filter(Boolean).join(" ");
-  const user = `Business / offer (may be non-English):\n${String(businessInfo).slice(0, 4000)}\n\nProspect: ${client.name || "(company)"}${client.contact ? `, contact ${client.contact}` : ""}${client.industry ? `, industry ${client.industry}` : ""}.`;
+  const user = `Knowledge base (may be non-English):\n${String(businessInfo).slice(0, 8000)}\n\nProspect: ${client.name || "(company)"}${client.contact ? `, contact ${client.contact}` : ""}${client.industry ? `, industry ${client.industry}` : ""}.`;
 
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -400,7 +399,7 @@ function SettingsModal({ settings, onSave, onClose, onReset }) {
         </select>
       </Field>
 
-      <Field label="AI call instructions / knowledge" hint="Anything the AI agent should know or follow on calls — your offer details, tone, rules, facts, do's & don'ts. The agent obeys this.">
+      <Field label="AI call rules & instructions" hint="Rules the agent must follow on calls — tone, do's & don'ts, things to always or never say. (Put company facts in the Knowledge Base box on the dashboard.)">
         <textarea style={{ ...modalInp, height: "100px", resize: "vertical", lineHeight: 1.6 }} value={d.aiInstructions}
           onChange={(e) => set("aiInstructions", e.target.value)}
           placeholder={"e.g. Always mention our 14-day free trial. Never promise specific pricing. If asked who we are, say we're an authorized partner. Keep calls under 3 minutes."} />
@@ -426,9 +425,6 @@ function SettingsModal({ settings, onSave, onClose, onReset }) {
       <Field label="Twilio From number" hint="Your Twilio voice number in international format.">
         <input style={modalInp} value={d.twilioFrom} onChange={(e) => set("twilioFrom", e.target.value)} placeholder="+15551234567" autoComplete="off" />
       </Field>
-      <Field label="Backend URL" hint="Where your CallForge call-backend runs (it needs a public URL Twilio can reach). Required for live AI calls — a static site like Vercel can't place calls on its own. Leave blank to use the default localhost backend in development.">
-        <input style={modalInp} value={d.backendUrl} onChange={(e) => set("backendUrl", e.target.value)} placeholder="https://your-backend.onrender.com" autoComplete="off" />
-      </Field>
 
       <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: "18px", paddingTop: "14px" }}>
         <button
@@ -451,8 +447,8 @@ function HelpModal({ onClose }) {
     <Overlay title="? HOW TO USE" onClose={onClose} footer={<button onClick={onClose} style={{ padding: "9px 18px", background: `${ACCENT}22`, border: `1px solid ${ACCENT}66`, borderRadius: "6px", color: ACCENT, fontFamily: "inherit", fontSize: "12px", cursor: "pointer" }}>Got it</button>}>
       <div style={p}>CallForge helps you cold-call leads: write personalized scripts, dial manually, or let an AI agent place the call for you. You can type your business info in <b>any language</b> — scripts come out in the language you pick in Settings.</div>
 
-      <div style={h}>1 · Describe your business</div>
-      <div style={p}>Fill in the <b>Your Business</b> box (left). Any language is fine.</div>
+      <div style={h}>1 · Build your knowledge base</div>
+      <div style={p}>Fill in the <b>Knowledge Base</b> box (left) with everything about your company — services, pricing, FAQs, policies. The AI uses it to pitch <i>and</i> to answer whatever the prospect asks. Any language is fine.</div>
 
       <div style={h}>2 · Add your leads</div>
       <div style={p}>Upload a CSV (<code>name, phone, contact, industry</code>) or click <b>+ Add</b>. For AI calls, phone numbers must be full international format, e.g. <code>+14155550142</code>.</div>
@@ -467,8 +463,8 @@ function HelpModal({ onClose }) {
       <div style={li}>• <b>📞 Call Now</b> → dials from your phone (tap-to-dial), you read the script.</div>
       <div style={li}>• <b>🤖 AI Call</b> → the AI agent dials and talks (needs the backend, below).</div>
 
-      <div style={h}>5 · Live AI calls need a backend</div>
-      <div style={p}>A real phone call requires a small server (Twilio streams the call audio to it). A static site can't do this alone. Deploy <code>server/index.js</code> (Render, Railway, Fly, a VPS…), set <code>PUBLIC_URL</code> to its public https URL, then paste that URL + your Twilio keys into Settings. See the README for steps.</div>
+      <div style={h}>5 · Live AI calls need the call server</div>
+      <div style={p}>A real phone call runs through the CallForge server (Twilio streams the call audio to it) — the same server this app already talks to. Just add your <b>Twilio keys</b> in ⚙ Settings, and make sure the server has <code>PUBLIC_URL</code> set to its public https URL. See the README for steps.</div>
 
       <div style={{ ...p, marginTop: "14px", color: WARN }}>⚠ AI cold-calling is regulated (TCPA, AI-disclosure, do-not-call). Confirm consent rules and test on your own number first.</div>
     </Overlay>
@@ -508,13 +504,9 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
   // Persist data (per-user keys)
   useEffect(() => { saveState(K("clients"), clients); }, [clients]);
   useEffect(() => { saveState(K("business"), businessInfo); }, [businessInfo]);
-  useEffect(() => {
-    saveState(K("settings"), settings);
-    // Keep the global backend URL in sync so auth/admin calls use the same server.
-    if (settings.backendUrl && settings.backendUrl.trim()) setApiBase(settings.backendUrl);
-  }, [settings]);
+  useEffect(() => { saveState(K("settings"), settings); }, [settings]);
 
-  const apiBase = (settings.backendUrl || "").trim().replace(/\/+$/, "") || getApiBase();
+  const apiBase = getApiBase();
 
   // Clear only THIS user's cached data, then reload with fresh samples.
   function resetMyData() {
@@ -604,7 +596,7 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
 
   async function handleGenerateScript() {
     if (!selectedClient || !businessInfo.trim()) {
-      toast("Fill in your business info first", "warn");
+      toast("Fill in your Knowledge Base first", "warn");
       return;
     }
     setLoading(true);
@@ -659,7 +651,7 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
     } catch (err) {
       setAiCalling(false);
       const cannotReach = err.message.includes("fetch") || err.message.includes("Failed to fetch") || err.message.includes("NetworkError");
-      toast(cannotReach ? "Can't reach the call backend. Live AI calls need a backend server — set its URL in ⚙ Settings (see ? How to use)." : err.message, "error");
+      toast(cannotReach ? "Can't reach the call server. Live AI calls need the CallForge server running (add your Twilio keys in ⚙ Settings)." : err.message, "error");
     }
   }
 
@@ -866,15 +858,18 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
         {/* ── Sidebar ── */}
         <div style={{ width: "300px", flexShrink: 0, borderRight: `1px solid ${BORDER}`, display: "flex", flexDirection: "column", overflow: "hidden", background: CARD }}>
 
-          {/* Business info */}
+          {/* Knowledge base — feeds the AI script writer AND the live agent's answers */}
           <div style={{ padding: "16px", borderBottom: `1px solid ${BORDER}` }}>
-            <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: MUTED, textTransform: "uppercase", marginBottom: "8px" }}>Your Business · any language</div>
+            <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: MUTED, textTransform: "uppercase", marginBottom: "8px", fontWeight: 700 }}>Knowledge Base · any language</div>
             <textarea
-              style={{ ...inp, height: "110px", resize: "none", lineHeight: "1.7" }}
+              style={{ ...inp, height: "150px", resize: "vertical", lineHeight: "1.7" }}
               value={businessInfo}
               onChange={(e) => setBusinessInfo(e.target.value)}
-              placeholder="Business: Company Name&#10;Service: What you offer&#10;Offer: Special deal&#10;Target: Who you call"
+              placeholder={"Tell the AI everything about your company so it can pitch and answer questions:\n\nBusiness: Company Name\nServices: What you offer\nPricing: Plans / rates\nOffer: Special deal\nTarget: Who you call\nFAQ: Common questions + answers\nPolicies: Anything the AI must know"}
             />
+            <div style={{ fontSize: "10px", color: MUTED, marginTop: "6px", lineHeight: 1.6 }}>
+              The AI uses this to write scripts <b>and</b> to answer whatever the prospect asks on the call. The more detail, the better.
+            </div>
           </div>
 
           {/* Upload & add */}
@@ -1007,7 +1002,7 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
               <div style={{ fontSize: "14px", color: TEXT }}>Select a client to start calling</div>
               <div style={{ fontSize: "11px" }}>Upload your CSV or use the sample clients on the left</div>
               <div style={{ fontSize: "10px", marginTop: "4px", padding: "8px 16px", background: `${ACCENT}0A`, border: `1px solid ${ACCENT}22`, borderRadius: "6px", color: ACCENT, maxWidth: "340px", textAlign: "center", lineHeight: "1.7" }}>
-                Business info in any language → {settings.targetLang} scripts.<br />Add your OpenAI key in ⚙ Settings · new here? tap ? Help
+                Knowledge base in any language → {settings.targetLang} scripts.<br />Add your OpenAI key in ⚙ Settings · new here? tap ? Help
               </div>
             </div>
           ) : (

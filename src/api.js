@@ -3,8 +3,8 @@
 // Backend URL resolution:
 //   • Default = same origin in production (one Render service serves UI + API),
 //     or localhost:8787 in dev. Override at build time with VITE_API_URL.
-//   • A global `cf_backend` localStorage key lets users point a separately-hosted
-//     UI at their backend (set from the login screen's "Advanced" field or Settings).
+//   • A `cf_backend` localStorage key can still override it, but no UI sets it now —
+//     configure VITE_API_URL at build time (e.g. on Vercel) instead.
 //
 // Token: a JWT kept in localStorage under `cf_token`.
 
