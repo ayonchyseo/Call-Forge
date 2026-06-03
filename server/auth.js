@@ -33,15 +33,28 @@ export async function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
   if (!token) return res.status(401).json({ error: "Please sign in." });
+
+  // Verify the JWT signature/expiry first. This throws JsonWebTokenError or
+  // TokenExpiredError for a bad/expired token — those are real 401s.
+  let payload;
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
+    payload = jwt.verify(token, JWT_SECRET);
+  } catch {
+    return res.status(401).json({ error: "Your session expired — please sign in again." });
+  }
+
+  // Look up the user separately so a DB/store error returns 503, not 401.
+  // Returning 401 on a store error would cause the frontend to log the user
+  // out and delete their token even though their credentials are perfectly valid.
+  try {
     const user = await store.getUserById(payload.uid);
     if (!user) return res.status(401).json({ error: "Account no longer exists." });
     if (user.status !== "approved") return res.status(403).json({ error: "Your account is not approved yet." });
     req.user = user;
     next();
-  } catch {
-    return res.status(401).json({ error: "Your session expired — please sign in again." });
+  } catch (err) {
+    console.error("requireAuth: store error:", err.message);
+    return res.status(503).json({ error: "Authentication service temporarily unavailable. Please try again." });
   }
 }
 
@@ -54,29 +67,39 @@ export function requireAdmin(req, res, next) {
 export function setupAuth(app) {
   // ── sign up ───────────────────────────────────────────────────────────────
   app.post("/api/auth/signup", async (req, res) => {
-    const email = String(req.body?.email || "").trim().toLowerCase();
-    const password = String(req.body?.password || "");
-    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: "Enter a valid email address." });
-    if (password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters." });
-    if (await store.getUserByEmail(email)) return res.status(409).json({ error: "An account with this email already exists." });
+    try {
+      const email = String(req.body?.email || "").trim().toLowerCase();
+      const password = String(req.body?.password || "");
+      if (!EMAIL_RE.test(email)) return res.status(400).json({ error: "Enter a valid email address." });
+      if (password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters." });
+      if (await store.getUserByEmail(email)) return res.status(409).json({ error: "An account with this email already exists." });
 
-    const passwordHash = await bcrypt.hash(password, 10);
-    await store.createUser({ email, passwordHash, role: "client", status: "pending" });
-    res.json({ ok: true, status: "pending", message: "Account created. An admin will approve it shortly." });
+      const passwordHash = await bcrypt.hash(password, 10);
+      await store.createUser({ email, passwordHash, role: "client", status: "pending" });
+      res.json({ ok: true, status: "pending", message: "Account created. An admin will approve it shortly." });
+    } catch (err) {
+      console.error("Signup error:", err.message);
+      res.status(503).json({ error: "Signup temporarily unavailable. Please try again." });
+    }
   });
 
   // ── log in ──────────────────────────────────────────────────────────────
   app.post("/api/auth/login", async (req, res) => {
-    const email = String(req.body?.email || "").trim().toLowerCase();
-    const password = String(req.body?.password || "");
-    const user = await store.getUserByEmail(email);
-    // Same generic message for unknown email vs wrong password (don't leak which).
-    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-      return res.status(401).json({ error: "Wrong email or password." });
+    try {
+      const email = String(req.body?.email || "").trim().toLowerCase();
+      const password = String(req.body?.password || "");
+      const user = await store.getUserByEmail(email);
+      // Same generic message for unknown email vs wrong password (don't leak which).
+      if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+        return res.status(401).json({ error: "Wrong email or password." });
+      }
+      if (user.status === "pending") return res.status(403).json({ error: "Your account is awaiting admin approval.", status: "pending" });
+      if (user.status === "rejected") return res.status(403).json({ error: "Your account request was declined.", status: "rejected" });
+      res.json({ token: signToken(user), user: publicUser(user) });
+    } catch (err) {
+      console.error("Login error:", err.message);
+      res.status(503).json({ error: "Login temporarily unavailable. Please try again." });
     }
-    if (user.status === "pending") return res.status(403).json({ error: "Your account is awaiting admin approval.", status: "pending" });
-    if (user.status === "rejected") return res.status(403).json({ error: "Your account request was declined.", status: "rejected" });
-    res.json({ token: signToken(user), user: publicUser(user) });
   });
 
   // ── who am I ────────────────────────────────────────────────────────────────
@@ -86,36 +109,61 @@ export function setupAuth(app) {
 
   // ── admin: list / approve / reject / role / delete ──────────────────────────
   app.get("/api/admin/users", requireAuth, requireAdmin, async (_req, res) => {
-    const users = await store.listUsers();
-    res.json({ users: users.map(publicUser) });
+    try {
+      const users = await store.listUsers();
+      res.json({ users: users.map(publicUser) });
+    } catch (err) {
+      console.error("Admin listUsers error:", err.message);
+      res.status(503).json({ error: "Could not load users. Please try again." });
+    }
   });
 
   app.post("/api/admin/users/:id/approve", requireAuth, requireAdmin, async (req, res) => {
-    const u = await store.setUserStatus(req.params.id, "approved");
-    if (!u) return res.status(404).json({ error: "User not found." });
-    res.json({ user: publicUser(u) });
+    try {
+      const u = await store.setUserStatus(req.params.id, "approved");
+      if (!u) return res.status(404).json({ error: "User not found." });
+      res.json({ user: publicUser(u) });
+    } catch (err) {
+      console.error("Admin approve error:", err.message);
+      res.status(503).json({ error: "Could not approve user. Please try again." });
+    }
   });
 
   app.post("/api/admin/users/:id/reject", requireAuth, requireAdmin, async (req, res) => {
-    if (req.params.id === req.user.id) return res.status(400).json({ error: "You can't reject your own account." });
-    const u = await store.setUserStatus(req.params.id, "rejected");
-    if (!u) return res.status(404).json({ error: "User not found." });
-    res.json({ user: publicUser(u) });
+    try {
+      if (req.params.id === req.user.id) return res.status(400).json({ error: "You can't reject your own account." });
+      const u = await store.setUserStatus(req.params.id, "rejected");
+      if (!u) return res.status(404).json({ error: "User not found." });
+      res.json({ user: publicUser(u) });
+    } catch (err) {
+      console.error("Admin reject error:", err.message);
+      res.status(503).json({ error: "Could not reject user. Please try again." });
+    }
   });
 
   app.post("/api/admin/users/:id/role", requireAuth, requireAdmin, async (req, res) => {
-    const role = req.body?.role === "admin" ? "admin" : "client";
-    if (req.params.id === req.user.id && role !== "admin") {
-      return res.status(400).json({ error: "You can't remove your own admin access." });
+    try {
+      const role = req.body?.role === "admin" ? "admin" : "client";
+      if (req.params.id === req.user.id && role !== "admin") {
+        return res.status(400).json({ error: "You can't remove your own admin access." });
+      }
+      const u = await store.setUserRole(req.params.id, role);
+      if (!u) return res.status(404).json({ error: "User not found." });
+      res.json({ user: publicUser(u) });
+    } catch (err) {
+      console.error("Admin setRole error:", err.message);
+      res.status(503).json({ error: "Could not update role. Please try again." });
     }
-    const u = await store.setUserRole(req.params.id, role);
-    if (!u) return res.status(404).json({ error: "User not found." });
-    res.json({ user: publicUser(u) });
   });
 
   app.delete("/api/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
-    if (req.params.id === req.user.id) return res.status(400).json({ error: "You can't delete your own account." });
-    await store.deleteUser(req.params.id);
-    res.json({ ok: true });
+    try {
+      if (req.params.id === req.user.id) return res.status(400).json({ error: "You can't delete your own account." });
+      await store.deleteUser(req.params.id);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("Admin deleteUser error:", err.message);
+      res.status(503).json({ error: "Could not delete user. Please try again." });
+    }
   });
 }

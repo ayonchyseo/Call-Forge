@@ -613,16 +613,18 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
   // ── Start an autonomous AI phone call via the backend ─────────────────────
   async function startAiCall() {
     if (!selectedClient) return;
-    let script = selectedClient.script;
-    if (!script) {
-      script = (await requestScript(selectedClient)).script;
-      setClients((prev) => prev.map((c) => (c.id === selected ? { ...c, script } : c)));
-    }
+    // Set loading state immediately — before any awaits — so the button
+    // is disabled even if script generation is the first async step.
     setAiResult(null);
     setAiStatus("queued");
     setAiTranscript([]);
     setAiCalling(true);
     try {
+      let script = selectedClient.script;
+      if (!script) {
+        script = (await requestScript(selectedClient)).script;
+        setClients((prev) => prev.map((c) => (c.id === selected ? { ...c, script } : c)));
+      }
       const res = await fetch(`${apiBase}/api/ai-call`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -643,9 +645,11 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
           aiInstructions: settings.aiInstructions,
         }),
       });
+      // Only log out on a genuine auth failure (expired/invalid token).
+      // 5xx responses mean a server problem — don't wipe the user's session for that.
       if (res.status === 401) { setAiCalling(false); toast("Session expired — please sign in again.", "error"); onLogout(); return; }
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to start AI call");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Server error (${res.status}) — please try again`);
       toast("AI call started — agent is dialing");
       pollAiCall(data.callId, selectedClient.id);
     } catch (err) {
