@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { apiJson, setApiBase, getApiBase } from "./api.js";
+import { apiJson } from "./api.js";
 import {
   BG, CARD, BORDER, TEXT, MUTED, ACCENT, ACCENT_TEXT, DANGER, WARN, INFO,
   SHADOW_LG, FONT, GLOBAL_CSS,
@@ -19,8 +19,6 @@ export default function AuthScreen({ onLogin }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState(null);          // { type, text } success/info banner
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [backend, setBackend] = useState(getApiBase());
 
   async function submit(e) {
     e.preventDefault();
@@ -137,23 +135,6 @@ export default function AuthScreen({ onLogin }) {
             </div>
           )}
 
-          {/* Advanced: point at a separately-hosted backend */}
-          <div style={{ marginTop: "18px", borderTop: `1px solid ${BORDER}`, paddingTop: "14px" }}>
-            <button type="button" onClick={() => setShowAdvanced((v) => !v)}
-              style={{ background: "transparent", border: "none", color: MUTED, fontSize: "12px", cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
-              {showAdvanced ? "▾" : "▸"} Advanced
-            </button>
-            {showAdvanced && (
-              <div style={{ marginTop: "10px" }}>
-                <label style={label}>Backend URL</label>
-                <input style={inp} value={backend} onChange={(e) => setBackend(e.target.value)}
-                  onBlur={() => setApiBase(backend)} placeholder="https://your-app.onrender.com" />
-                <div style={{ fontSize: "11px", color: MUTED, marginTop: "6px", lineHeight: 1.6 }}>
-                  Only needed if this page is hosted separately from the CallForge server. Leave blank to use this site's own server.
-                </div>
-              </div>
-            )}
-          </div>
         </div>
 
         <div style={{ textAlign: "center", fontSize: "11px", color: MUTED, marginTop: "18px", lineHeight: 1.6 }}>

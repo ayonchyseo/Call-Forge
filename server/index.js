@@ -78,8 +78,8 @@ function buildInstructions({ name, contact, industry, businessInfo, scriptText, 
   return [
     `You are a professional cold-calling sales agent on an outbound phone call. Speak natural, warm, conversational ${lang}. Be polite and concise, never robotic or pushy. Keep your turns short like a real phone conversation.`,
     "",
-    "About your business:",
-    businessInfo || "(no business info provided)",
+    "KNOWLEDGE BASE — this is everything you know about the business you represent. Use it to pitch, and to answer ANY question the prospect asks (services, pricing, process, company details, policies). If an answer is not in here, say you'll have someone follow up — do NOT make facts up:",
+    businessInfo || "(no knowledge base provided)",
     aiInstructions && aiInstructions.trim()
       ? `\nExtra instructions from the business owner — follow these carefully:\n${aiInstructions.trim()}`
       : "",
@@ -91,7 +91,7 @@ function buildInstructions({ name, contact, industry, businessInfo, scriptText, 
     scriptText || "(no script provided — improvise a polite intro, a short pitch, and a meeting request)",
     "----------------",
     "",
-    "Goals: (1) introduce yourself and ask if it's a good time; (2) understand their need and present the offer briefly; (3) if interested, propose a specific day/time for a 15-20 min meeting and confirm it; (4) if not interested, thank them and end politely.",
+    "Goals: (1) introduce yourself and ask if it's a good time; (2) understand their need and present the offer briefly; (3) answer any question they raise accurately, using the knowledge base above; (4) if interested, propose a specific day/time for a 15-20 min meeting and confirm it; (5) if not interested, thank them and end politely.",
     `Always speak ${lang}. Never fabricate facts. Respect requests not to be called. Open the call by greeting them first.`,
   ].join("\n");
 }
@@ -216,7 +216,7 @@ app.post("/api/generate-script", requireAuth, async (req, res) => {
     "Each value is the spoken text for that phase — warm, concise, not robotic. Use { } placeholders for details the caller fills in live, e.g. { your name }.",
   ].filter(Boolean).join(" ");
   const user = [
-    `Business / offer (may be non-English):\n${String(businessInfo).slice(0, 4000)}`,
+    `Knowledge base (may be non-English):\n${String(businessInfo).slice(0, 8000)}`,
     "",
     `Prospect: ${name || "(company)"}${contact ? `, contact ${contact}` : ""}${industry ? `, industry ${industry}` : ""}.`,
   ].join("\n");
