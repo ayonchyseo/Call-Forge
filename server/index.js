@@ -41,12 +41,13 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_FROM_NUMBER = process.env.TWILIO_FROM_NUMBER;  // your Twilio number, E.164 e.g. +15551234567
-// GA Realtime model candidates. If the first isn't accessible on the account/key,
-// the bridge automatically falls back to the next one DURING the call. Override
-// with OPENAI_REALTIME_MODEL to pin a single model (e.g. a cheaper one).
+// GA Realtime model candidates. gpt-4o-realtime-preview is the stable GA entry
+// point; gpt-4o-mini-realtime-preview is the cheaper/faster variant. The bridge
+// falls back automatically during the call if the first model is unavailable.
+// Override with OPENAI_REALTIME_MODEL to pin a specific dated snapshot.
 const REALTIME_MODELS = process.env.OPENAI_REALTIME_MODEL
   ? [process.env.OPENAI_REALTIME_MODEL]
-  : ["gpt-realtime", "gpt-realtime-mini", "gpt-4o-realtime-preview"];
+  : ["gpt-4o-realtime-preview", "gpt-4o-mini-realtime-preview"];
 const ANALYSIS_MODEL = process.env.OPENAI_ANALYSIS_MODEL || "gpt-4o-mini";
 const VOICE = process.env.OPENAI_VOICE || "alloy";
 // Hard cap on call length so a stuck/forgotten call can't run up charges.
@@ -428,25 +429,22 @@ wss.on("connection", (twilioWs) => {
     openaiWs = ws;
 
     ws.on("open", () => {
-      log("OpenAI ws open → sending GA session.update");
-      // GA session shape: audio.input/output with object formats; pcmu = G.711 µ-law (Twilio).
+      log("OpenAI ws open → sending session.update");
+      // GA Realtime API flat session shape (NOT the retired beta nested format).
+      // Twilio streams G.711 µ-law (PCMU) at 8 kHz — that is "g711_ulaw" in OpenAI's
+      // format enum. The old code used a nested audio:{input/output} structure with
+      // "audio/pcmu" which OpenAI silently ignores, so it defaulted to pcm16,
+      // making speech recognition receive the wrong encoding and breaking calls.
       ws.send(JSON.stringify({
         type: "session.update",
         session: {
-          type: "realtime",
+          modalities: ["audio"],
           instructions: call?.instructions || "You are a polite sales agent.",
-          output_modalities: ["audio"],
-          audio: {
-            input: {
-              format: { type: "audio/pcmu" },
-              turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600 },
-              transcription: { model: "whisper-1" },
-            },
-            output: {
-              format: { type: "audio/pcmu" },
-              voice: VOICE,
-            },
-          },
+          voice: VOICE,
+          input_audio_format: "g711_ulaw",
+          output_audio_format: "g711_ulaw",
+          input_audio_transcription: { model: "whisper-1" },
+          turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600 },
         },
       }));
       // Greet even if we somehow don't see session.updated (but after config has a moment to apply).
