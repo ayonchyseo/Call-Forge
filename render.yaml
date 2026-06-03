@@ -8,6 +8,18 @@
 #      your full app. Then in ⚙ Settings add your OpenAI + Twilio keys.
 #
 # PUBLIC_URL is auto-derived from Render's RENDER_EXTERNAL_URL, so you don't set it.
+#
+# DURABLE ACCOUNTS: this blueprint also provisions a managed Postgres database
+# (the `databases:` block below) and injects its connection string as
+# DATABASE_URL. That means user accounts + admin approvals survive restarts,
+# redeploys, and free-tier spin-downs — without it, they live in an ephemeral
+# file that Render wipes, which deletes everyone's login on every restart.
+databases:
+  - name: callforge-db
+    plan: free
+    databaseName: callforge
+    user: callforge
+
 services:
   - type: web
     name: callforge
@@ -24,11 +36,13 @@ services:
       - key: JWT_SECRET
         generateValue: true
       # ── Accounts & admin approval ─────────────────────────────────────────────
-      # DURABLE accounts: create a Postgres DB (Render Postgres / Neon / Supabase)
-      # and paste its connection string here. WITHOUT this, accounts live in an
-      # ephemeral file that is wiped on every redeploy — set it before going live.
-      # - key: DATABASE_URL
-      #   sync: false
+      # Durable account storage — connection string injected from the Postgres
+      # database provisioned above. The app uses Postgres automatically when this
+      # is set (see server/store.js), so accounts/approvals are no longer wiped.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: callforge-db
+          property: connectionString
       # First admin (who approves everyone else). Change the password!
       # If unset, a default admin is created and printed in the deploy logs.
       # - key: ADMIN_EMAIL
