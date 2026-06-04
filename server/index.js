@@ -445,11 +445,13 @@ wss.on("connection", (twilioWs) => {
           type: "realtime",
           instructions: call?.instructions || "You are a polite sales agent.",
           output_modalities: ["audio"],
-          // Explicitly request G.711 µ-law output so Twilio can play the
-          // agent audio without re-encoding. Without this, OpenAI may default
-          // to PCM16 which Twilio forwards to the phone as-is but at the wrong
-          // encoding, causing garbled / robotic audio heard by the prospect.
-          output_audio_format: "g711_ulaw",
+          // Audio formats are set in the nested audio.input/output blocks below
+          // (pcmu = G.711 µ-law, what Twilio streams). Do NOT add a top-level
+          // output_audio_format here — that is the retired beta field, and the GA
+          // API rejects the ENTIRE session.update on any unknown param. That
+          // rejection silently leaves the INPUT format at its pcm16 default, so
+          // OpenAI misreads Twilio's µ-law audio and the agent never responds
+          // to the prospect after the opening greeting.
           audio: {
             input: {
               format: { type: "audio/pcmu" },
