@@ -288,6 +288,14 @@ app.post("/api/ai-call", requireAuth, async (req, res) => {
     return res.status(400).json({ error: "Invalid phone number — use full international format, e.g. +14155550142." });
   }
 
+  // Catch a malformed "From" number here with a clear message — otherwise Twilio
+  // rejects the call with a cryptic "not yet verified for your account" error that
+  // looks like a CallForge bug but is really a missing "+" / country code.
+  const fromNumber = String(twFrom || "").replace(/[^+\d]/g, "");
+  if (!fromNumber || fromNumber.length < 8 || !fromNumber.startsWith("+")) {
+    return res.status(400).json({ error: `Twilio "From" number "${twFrom}" isn't in international format. It must start with + and the country code, e.g. +14155550142 — fix it in ⚙ Settings (or TWILIO_FROM_NUMBER on the server) to match exactly what's shown in your Twilio Console.` });
+  }
+
   const callId = crypto.randomUUID();
   calls[callId] = {
     callId, clientId, name, phone,
