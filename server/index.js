@@ -338,7 +338,12 @@ app.post("/api/ai-call", requireAuth, async (req, res) => {
       calls[callId].status = "completed";
       calls[callId].result = { ...cannedOutcome("twilio-failed"), transcript: "", endedReason: data?.message || "twilio-rejected" };
       saveCalls();
-      return res.status(r.status).json({ error: data?.message || "Twilio rejected the call", details: data });
+      // Twilio's numeric `code` + `more_info` link pinpoint the EXACT restriction —
+      // "Account not allowed to call X" alone can mean geo-permissions, a fraud/risk
+      // hold, a blocked-number list, etc. Surface both so the user (or Twilio support)
+      // can look up precisely which one fired instead of guessing from the message text.
+      const twilioRef = data?.code ? ` (Twilio error ${data.code}${data.more_info ? ` — see ${data.more_info}` : ""})` : "";
+      return res.status(r.status).json({ error: `${data?.message || "Twilio rejected the call"}${twilioRef}`, details: data });
     }
     calls[callId].twilioSid = data.sid;
     saveCalls();
