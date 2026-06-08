@@ -380,10 +380,22 @@ function Field({ label, hint, children }) {
   );
 }
 
-function SettingsModal({ settings, onSave, onClose, onReset }) {
+function SettingsModal({ settings, onSave, onClose, onReset, user }) {
   const [d, setD] = useState(settings);
   const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
   const btn = (bg, color, border) => ({ padding: "9px 18px", background: bg, border: `1px solid ${border}`, borderRadius: "6px", color, fontFamily: "inherit", fontSize: "12px", cursor: "pointer" });
+
+  // Platform-provisioned number: when CallForge auto-assigns one, the user
+  // never needs to touch Twilio at all. Only show the BYOK fields when there
+  // isn't an active platform number, or the user explicitly wants to override it.
+  const tw = user?.twilio || { status: "none" };
+  const platformActive = tw.status === "active" && tw.phoneNumber;
+  const [showByok, setShowByok] = useState(!platformActive);
+  const noteBox = (color, text) => (
+    <div style={{ padding: "12px 14px", background: `${color}11`, border: `1px solid ${color}44`, borderRadius: "6px", fontSize: "11px", color, lineHeight: 1.7 }}>
+      {text}
+    </div>
+  );
   return (
     <Overlay
       title="⚙ SETTINGS"
@@ -414,17 +426,35 @@ function SettingsModal({ settings, onSave, onClose, onReset }) {
       </Field>
 
       <div style={{ fontSize: "10px", letterSpacing: "0.12em", color: INFO, textTransform: "uppercase", margin: "20px 0 10px", borderTop: `1px solid ${BORDER}`, paddingTop: "16px" }}>
-        Twilio — for live AI calls only
+        Calling number — for live AI calls
       </div>
-      <Field label="Twilio Account SID">
-        <input style={modalInp} value={d.twilioSid} onChange={(e) => set("twilioSid", e.target.value)} placeholder="AC..." autoComplete="off" />
-      </Field>
-      <Field label="Twilio Auth Token">
-        <input type="password" style={modalInp} value={d.twilioToken} onChange={(e) => set("twilioToken", e.target.value)} placeholder="••••••••" autoComplete="off" />
-      </Field>
-      <Field label="Twilio From number" hint="Your Twilio voice number in international format.">
-        <input style={modalInp} value={d.twilioFrom} onChange={(e) => set("twilioFrom", e.target.value)} placeholder="+15551234567" autoComplete="off" />
-      </Field>
+
+      {platformActive && noteBox(ACCENT, <>✓ Your CallForge number is <b>{tw.phoneNumber}</b> — calls go out from it automatically. No Twilio account needed on your end.</>)}
+      {tw.status === "pending" && noteBox(WARN, "⏳ Setting up your CallForge number — this usually takes well under a minute after approval. Reopen Settings shortly, or add your own Twilio keys below to call right away.")}
+      {tw.status === "failed" && noteBox(DANGER, <>✗ We couldn't set up your CallForge number automatically{tw.error ? <> — <i>{tw.error}</i></> : "."} Add your own Twilio keys below, or contact support to retry it.</>)}
+
+      {platformActive && !showByok && (
+        <button onClick={() => setShowByok(true)} style={{ background: "transparent", border: "none", color: ACCENT, fontSize: "10px", cursor: "pointer", textDecoration: "underline", fontFamily: "inherit", padding: "8px 0 0" }}>
+          Use my own Twilio account instead →
+        </button>
+      )}
+
+      {(showByok || !platformActive) && <>
+        {platformActive && (
+          <div style={{ fontSize: "10px", color: MUTED, margin: "12px 0 10px", lineHeight: 1.6 }}>
+            Optional — override your CallForge number with your own Twilio account:
+          </div>
+        )}
+        <Field label="Twilio Account SID">
+          <input style={modalInp} value={d.twilioSid} onChange={(e) => set("twilioSid", e.target.value)} placeholder="AC..." autoComplete="off" />
+        </Field>
+        <Field label="Twilio Auth Token">
+          <input type="password" style={modalInp} value={d.twilioToken} onChange={(e) => set("twilioToken", e.target.value)} placeholder="••••••••" autoComplete="off" />
+        </Field>
+        <Field label="Twilio From number" hint="Your Twilio voice number in international format.">
+          <input style={modalInp} value={d.twilioFrom} onChange={(e) => set("twilioFrom", e.target.value)} placeholder="+15551234567" autoComplete="off" />
+        </Field>
+      </>}
 
       <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: "18px", paddingTop: "14px" }}>
         <button
@@ -833,7 +863,7 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
 
       <ToastList toasts={toasts} />
 
-      {showSettings && <SettingsModal settings={settings} onSave={(s) => { setSettings(s); toast("Settings saved"); }} onClose={() => setShowSettings(false)} onReset={resetMyData} />}
+      {showSettings && <SettingsModal settings={settings} onSave={(s) => { setSettings(s); toast("Settings saved"); }} onClose={() => setShowSettings(false)} onReset={resetMyData} user={user} />}
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
 
       {/* ── Header ── */}

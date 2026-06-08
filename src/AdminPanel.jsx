@@ -62,6 +62,7 @@ export default function AdminPanel({ user, onBack, onLogout }) {
   const approve = (id) => act(id, () => apiJson(`/api/admin/users/${id}/approve`, { method: "POST" }));
   const reject = (id) => act(id, () => apiJson(`/api/admin/users/${id}/reject`, { method: "POST" }));
   const setRole = (id, role) => act(id, () => apiJson(`/api/admin/users/${id}/role`, { method: "POST", body: { role } }));
+  const provision = (id) => act(id, () => apiJson(`/api/admin/users/${id}/provision`, { method: "POST" }));
   const remove = (id, email) => {
     if (!window.confirm(`Delete ${email}? They will lose access immediately.`)) return;
     act(id, () => apiJson(`/api/admin/users/${id}`, { method: "DELETE" }));
@@ -89,9 +90,21 @@ export default function AdminPanel({ user, onBack, onLogout }) {
         </div>
         <Badge color={u.role === "admin" ? INFO : MUTED}>{u.role === "admin" ? "Admin" : "Client"}</Badge>
         <Badge color={STATUS_META[u.status].color}>{STATUS_META[u.status].label}</Badge>
+        {u.twilio && u.twilio.status !== "none" && (
+          <Badge color={u.twilio.status === "active" ? ACCENT : u.twilio.status === "pending" ? WARN : DANGER}>
+            {u.twilio.status === "active" ? `☎ ${u.twilio.phoneNumber}`
+              : u.twilio.status === "pending" ? "☎ provisioning…"
+              : "☎ provision failed"}
+          </Badge>
+        )}
         <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", justifyContent: "flex-end", flex: "1 1 auto" }}>
           {u.status === "pending" && (
             <button disabled={busyId === u.id} onClick={() => approve(u.id)} style={btn(ACCENT, ACCENT_TEXT, ACCENT)}>✓ Approve</button>
+          )}
+          {u.twilio?.status === "failed" && (
+            <button disabled={busyId === u.id} onClick={() => provision(u.id)} title={u.twilio.error || "Retry Twilio number provisioning"} style={btn(`${WARN}12`, WARN, `${WARN}44`)}>
+              ↻ Retry number
+            </button>
           )}
           {u.status !== "rejected" && !isSelf && (
             <button disabled={busyId === u.id} onClick={() => reject(u.id)} style={btn(`${DANGER}12`, DANGER, `${DANGER}44`)}>

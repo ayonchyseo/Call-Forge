@@ -11,6 +11,7 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import * as store from "./store.js";
+import * as platform from "./twilioPlatform.js";
 
 const JWT_SECRET = process.env.JWT_SECRET || "callforge-dev-secret-change-me";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -19,13 +20,41 @@ if (!process.env.JWT_SECRET) {
   console.log("⚠  JWT_SECRET not set — using a dev fallback. Set JWT_SECRET so logins survive restarts.");
 }
 
-// Strip secrets before returning a user to the browser.
+// Strip secrets before returning a user to the browser. (`twilio.subaccountSid`
+// and the encrypted token never leave the server — only the bits the UI needs
+// to show "Your number: +1... ✓ ready" / "setting up" / "failed: <reason>".)
 function publicUser(u) {
-  return { id: u.id, email: u.email, role: u.role, status: u.status, createdAt: u.createdAt };
+  return {
+    id: u.id, email: u.email, role: u.role, status: u.status, createdAt: u.createdAt,
+    twilio: { status: u.twilio?.status || "none", phoneNumber: u.twilio?.phoneNumber || "", error: u.twilio?.error || "" },
+  };
 }
 
 function signToken(user) {
   return jwt.sign({ uid: user.id, role: user.role }, JWT_SECRET, { expiresIn: "30d" });
+}
+
+// ── platform-Twilio auto-provisioning ────────────────────────────────────────
+// Runs AFTER the HTTP response so an admin approving someone isn't stuck
+// waiting ~10-20s on Twilio's API; the user's Settings page shows
+// `twilio.status` (pending → active/failed) once they refresh.
+async function provisionNow(user) {
+  try {
+    const result = await platform.provisionUser(user);
+    await store.setTwilioAccount(user.id, result);
+    console.log(`✅ Twilio number ${result.phoneNumber} provisioned for ${user.email} (subaccount ${result.subaccountSid})`);
+  } catch (err) {
+    console.error(`✗ Twilio provisioning failed for ${user.email}: ${err.message}`);
+    await store.setTwilioStatus(user.id, "failed", err.message);
+  }
+}
+
+// Auto-trigger on approval — only when platform mode is on, and only once
+// (skips users who already have an active number or a provision in flight).
+function maybeProvision(user) {
+  if (!platform.platformEnabled) return;
+  if (user.twilio?.status === "active" || user.twilio?.status === "pending") return;
+  store.setTwilioStatus(user.id, "pending").then(() => provisionNow(user));
 }
 
 // Require a valid token for an APPROVED account. Attaches req.user.
@@ -123,6 +152,7 @@ export function setupAuth(app) {
       const u = await store.setUserStatus(req.params.id, "approved");
       if (!u) return res.status(404).json({ error: "User not found." });
       res.json({ user: publicUser(u) });
+      maybeProvision(u); // fire-and-forget: subaccount + number show up shortly after
     } catch (err) {
       console.error("Admin approve error:", err.message);
       res.status(503).json({ error: "Could not approve user. Please try again." });
@@ -153,6 +183,23 @@ export function setupAuth(app) {
     } catch (err) {
       console.error("Admin setRole error:", err.message);
       res.status(503).json({ error: "Could not update role. Please try again." });
+    }
+  });
+
+  // Retry Twilio provisioning by hand (e.g. after a transient Twilio error, or
+  // "no numbers available in that area code" — fix PLATFORM_NUMBER_AREA_CODE
+  // and retry). Re-runs even for a `failed` user; no-ops if platform mode is off.
+  app.post("/api/admin/users/:id/provision", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      if (!platform.platformEnabled) return res.status(400).json({ error: "Platform Twilio isn't configured on this server (set PLATFORM_TWILIO_SID/PLATFORM_TWILIO_TOKEN)." });
+      const u = await store.getUserById(req.params.id);
+      if (!u) return res.status(404).json({ error: "User not found." });
+      await store.setTwilioStatus(u.id, "pending");
+      res.json({ ok: true, status: "pending" });
+      provisionNow(u);
+    } catch (err) {
+      console.error("Admin provision error:", err.message);
+      res.status(503).json({ error: "Could not start provisioning. Please try again." });
     }
   });
 
