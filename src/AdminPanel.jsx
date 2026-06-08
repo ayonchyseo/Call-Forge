@@ -31,6 +31,7 @@ export default function AdminPanel({ user, onBack, onLogout }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState(null);
+  const [platformTwilio, setPlatformTwilio] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -45,7 +46,12 @@ export default function AdminPanel({ user, onBack, onLogout }) {
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    // Whether the server auto-provisions Twilio numbers — only then does it make
+    // sense to offer "set up a number" for users who predate platform mode.
+    apiJson("/api/health").then((d) => setPlatformTwilio(Boolean(d.platformTwilio))).catch(() => {});
+  }, []);
 
   async function act(id, fn) {
     setBusyId(id);
@@ -104,6 +110,11 @@ export default function AdminPanel({ user, onBack, onLogout }) {
           {u.twilio?.status === "failed" && (
             <button disabled={busyId === u.id} onClick={() => provision(u.id)} title={u.twilio.error || "Retry Twilio number provisioning"} style={btn(`${WARN}12`, WARN, `${WARN}44`)}>
               ↻ Retry number
+            </button>
+          )}
+          {platformTwilio && u.status === "approved" && u.twilio?.status === "none" && (
+            <button disabled={busyId === u.id} onClick={() => provision(u.id)} title="This account predates platform mode (or signed up before it was on) — give it an auto-provisioned number too" style={btn(`${ACCENT}12`, ACCENT, `${ACCENT}44`)}>
+              ☎ Set up number
             </button>
           )}
           {u.status !== "rejected" && !isSelf && (

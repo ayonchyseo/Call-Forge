@@ -211,6 +211,7 @@ app.get("/api/health", (_req, res) => {
     publicUrl: Boolean(PUBLIC_URL),
     hasServerOpenAI: Boolean(OPENAI_API_KEY),
     hasServerTwilio: Boolean(TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && TWILIO_FROM_NUMBER),
+    platformTwilio: platform.platformEnabled,
   });
 });
 
