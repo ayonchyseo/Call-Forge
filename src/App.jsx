@@ -193,6 +193,7 @@ function scriptToText(script) {
 const DEFAULT_SETTINGS = {
   targetLang: "English",
   aiInstructions: "",
+  voice: "alloy",
   openaiKey: "",
   twilioSid: "",
   twilioToken: "",
@@ -200,6 +201,22 @@ const DEFAULT_SETTINGS = {
 };
 
 const LANGUAGES = ["English", "Spanish", "French", "German", "Portuguese", "Arabic", "Hindi", "Bangla", "Chinese", "Japanese"];
+
+// Voices the AI agent can speak with (OpenAI Realtime). "marin"/"cedar" are the
+// newest and most natural-sounding; the rest are the classic set. Must match the
+// allowlist the backend validates against.
+const VOICES = [
+  { id: "marin", label: "Marin — natural, warm (recommended)" },
+  { id: "cedar", label: "Cedar — natural, calm (recommended)" },
+  { id: "alloy", label: "Alloy — neutral, balanced" },
+  { id: "ash", label: "Ash — friendly, upbeat" },
+  { id: "ballad", label: "Ballad — soft, expressive" },
+  { id: "coral", label: "Coral — bright, conversational" },
+  { id: "echo", label: "Echo — clear, professional" },
+  { id: "sage", label: "Sage — measured, calm" },
+  { id: "shimmer", label: "Shimmer — light, energetic" },
+  { id: "verse", label: "Verse — versatile, natural" },
+];
 
 // Short code for the target language, shown in the header badge.
 function langShort(lang) {
@@ -405,6 +422,12 @@ function SettingsModal({ settings, onSave, onClose, onReset }) {
           placeholder={"e.g. Always mention our 14-day free trial. Never promise specific pricing. If asked who we are, say we're an authorized partner. Keep calls under 3 minutes."} />
       </Field>
 
+      <Field label="AI agent voice" hint="The voice the agent speaks with on live calls. Marin and Cedar sound the most human — try a couple to find your favorite.">
+        <select style={modalInp} value={d.voice || "alloy"} onChange={(e) => set("voice", e.target.value)}>
+          {VOICES.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+        </select>
+      </Field>
+
       <div style={{ margin: "18px 0 12px", padding: "10px 12px", background: `${WARN}11`, border: `1px solid ${WARN}44`, borderRadius: "6px", fontSize: "10px", color: WARN, lineHeight: 1.6 }}>
         ⚠ Keys are stored only in <b>this browser</b> (localStorage) and sent to your backend / OpenAI directly. Use your own keys on a device you trust. Don't use this on a shared computer.
       </div>
@@ -494,6 +517,8 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
   const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...loadState(K("settings"), {}) }));
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [editingScript, setEditingScript] = useState(false);     // script edit mode
+  const [scriptDraft, setScriptDraft] = useState([]);            // [{id,name,text}] while editing
   const fileRef = useRef();
   const timerRef = useRef();
   const aiPollRef = useRef();
@@ -533,6 +558,8 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
     setAiResult(null);
     setAiStatus("");
     setAiTranscript([]);
+    setEditingScript(false);
+    setScriptDraft([]);
     clearInterval(aiPollRef.current);
   }, [selected]);
 
@@ -643,6 +670,7 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
           twilioFrom: settings.twilioFrom,
           targetLang: settings.targetLang,
           aiInstructions: settings.aiInstructions,
+          voice: settings.voice,
         }),
       });
       // Only log out on a genuine auth failure (expired/invalid token).
@@ -771,6 +799,51 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
     if (!selected) return;
     setClients((prev) => prev.map((c) => (c.id === selected ? { ...c, notes: "" } : c)));
     toast("Notes cleared");
+  }
+
+  // ── Edit the generated script ───────────────────────────────────────────────
+  // Editing works on an array of {id,name,text} so sections can be renamed,
+  // reordered-by-add/remove, and added freely; it's converted back to the
+  // {SECTION: text} object on save.
+  function startEditScript() {
+    const src = selectedClient?.script || {};
+    setScriptDraft(Object.entries(src).map(([name, text], i) => ({ id: `s${Date.now()}_${i}`, name, text })));
+    setEditingScript(true);
+  }
+  function cancelEditScript() {
+    setEditingScript(false);
+    setScriptDraft([]);
+  }
+  function updateDraftSection(id, key, value) {
+    setScriptDraft((prev) => prev.map((s) => (s.id === id ? { ...s, [key]: value } : s)));
+  }
+  function removeDraftSection(id) {
+    setScriptDraft((prev) => prev.filter((s) => s.id !== id));
+  }
+  function addDraftSection() {
+    setScriptDraft((prev) => [...prev, { id: `s${Date.now()}_${prev.length}`, name: "NEW SECTION", text: "" }]);
+  }
+  function saveScript() {
+    if (!selected) return;
+    const obj = {};
+    for (const s of scriptDraft) {
+      const name = (s.name || "").trim();
+      const text = (s.text || "").trim();
+      if (name && text) obj[name] = text;
+    }
+    if (!Object.keys(obj).length) { toast("Add at least one section with text, or cancel.", "warn"); return; }
+    setClients((prev) => prev.map((c) => (c.id === selected ? { ...c, script: obj } : c)));
+    setEditingScript(false);
+    setScriptDraft([]);
+    toast("Script saved");
+  }
+  function copyScript() {
+    const text = scriptToText(selectedClient?.script);
+    if (!text) return;
+    try {
+      navigator.clipboard.writeText(text);
+      toast("Script copied to clipboard");
+    } catch { toast("Couldn't copy — your browser blocked clipboard access.", "warn"); }
   }
 
   function exportCSV() {
@@ -1069,6 +1142,12 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
                       </span>
                     ) : script ? "↺ Regenerate" : "⚡ Generate Script"}
                   </button>
+                  {script && !editingScript && (
+                    <>
+                      <button onClick={startEditScript} title="Edit the script" style={{ padding: "9px 14px", background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "6px", color: MUTED, fontFamily: "inherit", fontSize: "12px", cursor: "pointer", letterSpacing: "0.05em" }}>✎ Edit</button>
+                      <button onClick={copyScript} title="Copy script to clipboard" style={{ padding: "9px 14px", background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "6px", color: MUTED, fontFamily: "inherit", fontSize: "12px", cursor: "pointer", letterSpacing: "0.05em" }}>⧉ Copy</button>
+                    </>
+                  )}
                   <button
                     onClick={startAiCall}
                     disabled={aiCalling}
@@ -1187,8 +1266,36 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
                   </div>
                 )}
 
-                {/* Script sections */}
-                {!loading && script && Object.entries(script).map(([section, text]) =>
+                {/* Script — EDIT mode */}
+                {!loading && editingScript && (
+                  <div style={{ marginBottom: "14px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px", marginBottom: "12px" }}>
+                      <div style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.12em", fontWeight: 700 }}>✎ EDITING SCRIPT</div>
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <button onClick={addDraftSection} style={{ padding: "7px 12px", background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "6px", color: MUTED, fontFamily: "inherit", fontSize: "11px", cursor: "pointer" }}>+ Add section</button>
+                        <button onClick={cancelEditScript} style={{ padding: "7px 12px", background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "6px", color: MUTED, fontFamily: "inherit", fontSize: "11px", cursor: "pointer" }}>Cancel</button>
+                        <button onClick={saveScript} style={{ padding: "7px 14px", background: ACCENT, border: "none", borderRadius: "6px", color: ACCENT_TEXT, fontFamily: "inherit", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>✓ Save script</button>
+                      </div>
+                    </div>
+                    {scriptDraft.map((s) => (
+                      <div key={s.id} style={{ background: CARD, border: `1px solid ${ACCENT}33`, borderRadius: "14px", boxShadow: SHADOW, padding: "14px 16px", marginBottom: "12px" }}>
+                        <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+                          <input value={s.name} onChange={(e) => updateDraftSection(s.id, "name", e.target.value)} placeholder="SECTION NAME"
+                            style={{ flex: 1, background: BG, border: `1px solid ${BORDER}`, borderRadius: "6px", color: ACCENT, fontFamily: "inherit", fontSize: "10px", letterSpacing: "0.15em", textTransform: "uppercase", fontWeight: 700, padding: "9px 10px", boxSizing: "border-box" }} />
+                          <button onClick={() => removeDraftSection(s.id)} title="Remove section" style={{ background: `${DANGER}11`, border: `1px solid ${DANGER}44`, borderRadius: "6px", color: DANGER, fontSize: "12px", padding: "0 11px", cursor: "pointer", fontFamily: "inherit" }}>✕</button>
+                        </div>
+                        <textarea value={s.text} onChange={(e) => updateDraftSection(s.id, "text", e.target.value)} placeholder="What the agent says in this part…"
+                          style={{ width: "100%", boxSizing: "border-box", minHeight: "84px", resize: "vertical", background: BG, border: `1px solid ${BORDER}`, borderRadius: "6px", color: TEXT, fontFamily: "inherit", fontSize: "13px", lineHeight: 1.7, padding: "10px 12px" }} />
+                      </div>
+                    ))}
+                    {scriptDraft.length === 0 && (
+                      <div style={{ textAlign: "center", color: MUTED, fontSize: "12px", padding: "24px", border: `1px dashed ${BORDER}`, borderRadius: "10px" }}>No sections yet — click <b>+ Add section</b> to start.</div>
+                    )}
+                  </div>
+                )}
+
+                {/* Script sections — read-only */}
+                {!loading && !editingScript && script && Object.entries(script).map(([section, text]) =>
                   text ? (
                     <div key={section} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: "14px", boxShadow: SHADOW, padding: "18px 20px", marginBottom: "14px" }}>
                       <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: ACCENT, fontWeight: 700, textTransform: "uppercase", marginBottom: "10px" }}>{section}</div>
