@@ -68,8 +68,9 @@ const CALL_MAX_SECONDS = Number(process.env.CALL_MAX_SECONDS || 300);
 //     a reply while the FULL reply still showed in the transcript. 0.6 keeps real
 //     interruptions working while stopping those false cut-offs.
 //   • VAD_SILENCE_MS — how long the prospect must pause before the agent speaks.
-//     Lower = snappier responses. 600ms felt sluggish; 500ms is clearly faster
-//     without clipping the prospect mid-thought.
+//     Lower = snappier responses. 600ms felt sluggish; 400ms replies noticeably
+//     faster. Raise it back toward 600 if the agent starts talking over a prospect
+//     who's just pausing mid-thought.
 //   • VAD_PREFIX_MS  — audio retained just before detected speech (unchanged).
 //
 // Parsed through envNum so a mistyped/out-of-range value can't reach the wire:
@@ -89,8 +90,16 @@ function envNum(name, def, { min, max } = {}) {
   return n;
 }
 const VAD_THRESHOLD = envNum("VAD_THRESHOLD", 0.6, { min: 0, max: 1 });
-const VAD_SILENCE_MS = envNum("VAD_SILENCE_MS", 500, { min: 0 });
+const VAD_SILENCE_MS = envNum("VAD_SILENCE_MS", 400, { min: 0 });
 const VAD_PREFIX_MS = envNum("VAD_PREFIX_MS", 300, { min: 0 });
+
+// If the OpenAI Realtime socket drops MID-call (idle proxy timeout, transient
+// network blip, a server-side hiccup), recover instead of leaving the prospect
+// in dead air. We reconnect and resume up to this many times per call before
+// giving up and ending cleanly. A periodic ping (below) keeps the socket alive
+// through lulls so this safety net rarely has to fire.
+const MAX_RECONNECTS = envNum("OPENAI_MAX_RECONNECTS", 3, { min: 0 });
+const KEEPALIVE_MS = envNum("OPENAI_KEEPALIVE_MS", 20000, { min: 1000 });
 
 // ── tiny JSON file store (fine for a PoC) ───────────────────────────────────
 function loadCalls() {
@@ -430,6 +439,8 @@ wss.on("connection", (twilioWs) => {
   let responding = false;    // an assistant response is currently being generated
   let framesToTwilio = 0;
   let modelIdx = 0;          // index into REALTIME_MODELS (auto-fallback)
+  let reconnectAttempts = 0; // mid-call OpenAI reconnects used (capped by MAX_RECONNECTS)
+  let callOver = false;      // Twilio side ended → never reconnect a dead call
   const seen = new Set();    // log each OpenAI event type once
   const pending = [];        // caller audio that arrives before the session is ready
 
@@ -437,21 +448,32 @@ wss.on("connection", (twilioWs) => {
   const recordError = (msg) => { const c = callId && calls[callId]; if (c) c.lastError = msg; };
 
   function finalize(reason) {
+    callOver = true; // stop any in-flight reconnect from reviving the call
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
     finalizeCall(callId && calls[callId], reason);
   }
 
-  function startConversation(ws) {
-    if (greeted || ws.readyState !== WebSocket.OPEN) return;
-    greeted = true;
+  // Arm the audio path once the session is configured. On the FIRST connect we
+  // greet the prospect; on a mid-call RECONNECT we resume silently (no second
+  // "hello"), dropping the audio captured during the outage so it can't race
+  // server-VAD into a duplicate response. Either way, flush whatever caller audio
+  // queued while we were (re)connecting.
+  function markReady(ws) {
+    if (ws.readyState !== WebSocket.OPEN || openaiReady) return;
     openaiReady = true;
-    log(`session ready → greeting; flushing ${pending.length} queued audio frames`);
-    ws.send(JSON.stringify({
-      type: "conversation.item.create",
-      item: { type: "message", role: "user", content: [{ type: "input_text", text: "The call just connected. Greet the person warmly and begin the conversation now." }] },
-    }));
-    ws.send(JSON.stringify({ type: "response.create" }));
-    while (pending.length && ws.readyState === WebSocket.OPEN) ws.send(pending.shift());
+    if (!greeted) {
+      greeted = true;
+      log(`session ready → greeting; flushing ${pending.length} queued audio frames`);
+      ws.send(JSON.stringify({
+        type: "conversation.item.create",
+        item: { type: "message", role: "user", content: [{ type: "input_text", text: "The call just connected. Greet the person warmly and begin the conversation now." }] },
+      }));
+      ws.send(JSON.stringify({ type: "response.create" }));
+      while (pending.length && ws.readyState === WebSocket.OPEN) ws.send(pending.shift());
+    } else {
+      pending.length = 0; // discard partial outage audio; let fresh speech drive
+      log("session re-armed after reconnect → resuming the conversation");
+    }
   }
 
   // Try the next model if the current one isn't usable; returns true if it retried.
@@ -474,9 +496,17 @@ wss.on("connection", (twilioWs) => {
       headers: { Authorization: `Bearer ${key}` },
     });
     openaiWs = ws;
+    let keepAlive = null; // ping timer for THIS socket; cleared on its close
 
     ws.on("open", () => {
       log("OpenAI ws open → sending GA session.update");
+      // Keepalive: ping periodically so an idle proxy / load balancer doesn't
+      // silently drop the realtime socket during a conversation lull — a cause of
+      // the call going dead partway through. Cleared in the close handler.
+      keepAlive = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) { try { ws.ping(); } catch { /* ignore */ } }
+      }, KEEPALIVE_MS);
+      keepAlive.unref?.();
       // GA session shape: audio.input/output with object formats; pcmu = G.711 µ-law (Twilio).
       // (Verified against live call logs — this is the correct current GA format.)
       ws.send(JSON.stringify({
@@ -505,8 +535,8 @@ wss.on("connection", (twilioWs) => {
           },
         },
       }));
-      // Greet even if we somehow don't see session.updated (but after config has a moment to apply).
-      setTimeout(() => { if (ws === openaiWs && !greeted && ws.readyState === WebSocket.OPEN) { log("no session.updated after 3s — greeting anyway"); startConversation(ws); } }, 3000);
+      // Arm even if we somehow don't see session.updated (but after config has a moment to apply).
+      setTimeout(() => { if (ws === openaiWs && !openaiReady && ws.readyState === WebSocket.OPEN) { log("no session.updated after 3s — arming anyway"); markReady(ws); } }, 3000);
     });
 
     ws.on("message", (raw) => {
@@ -517,10 +547,14 @@ wss.on("connection", (twilioWs) => {
 
       switch (evt.type) {
         case "session.updated":
-          startConversation(ws);
+          markReady(ws);
           break;
         case "response.created":
           responding = true;
+          // A response generating on this socket proves the (re)connection is
+          // healthy — reset the mid-call reconnect budget so a later, unrelated
+          // drop still gets its full set of recovery attempts.
+          reconnectAttempts = 0;
           break;
         case "response.done":
           responding = false;
@@ -572,11 +606,40 @@ wss.on("connection", (twilioWs) => {
 
     ws.on("error", (err) => { log("✗ OpenAI ws error:", err?.message || err); });
     ws.on("close", (code, reasonBuf) => {
+      clearInterval(keepAlive);
       const reason = (reasonBuf && reasonBuf.toString()) || "";
       openaiReady = false;
+      responding = false; // a closed socket has no in-flight response to cancel
       if (ws !== openaiWs) return; // a superseded (retried) socket closing — ignore
       log(`OpenAI ws closed (code=${code} reason="${reason}"); audio frames sent to Twilio: ${framesToTwilio}`);
-      if (greeted) return;
+
+      // Already greeted = the socket dropped MID-call. Previously we just returned
+      // here, which left the prospect in dead air until the max-duration timer
+      // killed the call — the "call gets stuck after a while" bug. Instead,
+      // reconnect and resume (same model that was working) so the conversation
+      // continues. The call is only abandoned if it's already ending or we've
+      // exhausted the reconnect budget.
+      if (greeted) {
+        const c = calls[callId];
+        if (callOver || !c || c.status !== "in-progress" || twilioWs.readyState !== WebSocket.OPEN) return;
+        if (reconnectAttempts >= MAX_RECONNECTS) {
+          log(`✗ reconnect budget exhausted (${MAX_RECONNECTS}) — ending call`);
+          recordError(`OpenAI realtime kept dropping mid-call (last code ${code}); ended after ${MAX_RECONNECTS} reconnect attempts.`);
+          finalize("openai-error");
+          hangupTwilio(calls[callId]);
+          return;
+        }
+        reconnectAttempts++;
+        log(`OpenAI dropped mid-call → reconnecting to resume (attempt ${reconnectAttempts}/${MAX_RECONNECTS})`);
+        // Small backoff so we don't hot-loop if OpenAI is rejecting immediately.
+        setTimeout(() => {
+          const cc = calls[callId];
+          if (!callOver && cc && cc.status === "in-progress" && twilioWs.readyState === WebSocket.OPEN) connectOpenAI();
+        }, 300);
+        return;
+      }
+
+      // Never greeted = this model never worked. Try the next candidate, or give up.
       if (tryNextModel(`closed code=${code}`)) return;
       // All models exhausted and we never got audio — surface it and end the dead-air call.
       recordError(`Realtime connection failed: ${reason || `code ${code}`}. Check OpenAI Realtime access / OPENAI_REALTIME_MODEL.`);
