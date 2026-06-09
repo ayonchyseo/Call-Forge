@@ -53,7 +53,13 @@ const REALTIME_MODELS = process.env.OPENAI_REALTIME_MODEL
   ? [process.env.OPENAI_REALTIME_MODEL]
   : ["gpt-realtime-mini", "gpt-realtime", "gpt-4o-realtime-preview"];
 const ANALYSIS_MODEL = process.env.OPENAI_ANALYSIS_MODEL || "gpt-4o-mini";
-const VOICE = process.env.OPENAI_VOICE || "alloy";
+// Voices the GA Realtime API accepts. The user can pick one per call from
+// Settings; anything not on this list is ignored and we fall back to the default,
+// because an unknown voice would make OpenAI reject the ENTIRE session.update
+// (same failure mode as any bad param) and break the call.
+const VALID_VOICES = new Set(["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"]);
+const VOICE = (process.env.OPENAI_VOICE || "alloy").trim();
+const sanitizeVoice = (v) => (typeof v === "string" && VALID_VOICES.has(v.trim()) ? v.trim() : VOICE);
 // Hard cap on call length so a stuck/forgotten call can't run up charges.
 const CALL_MAX_SECONDS = Number(process.env.CALL_MAX_SECONDS || 300);
 
@@ -125,24 +131,41 @@ const calls = loadCalls();
 function buildInstructions({ name, contact, industry, businessInfo, scriptText, targetLang, aiInstructions }) {
   const lang = (targetLang || "English").trim() || "English";
   return [
-    `You are a professional cold-calling sales agent on an outbound phone call. Speak natural, warm, conversational ${lang}. Be polite and concise, never robotic or pushy. Keep your turns short like a real phone conversation.`,
+    `You are a real person — a warm, experienced sales rep making an outbound call. You are NOT an AI and never say or imply that you are. Speak natural, everyday ${lang}.`,
     "",
-    "KNOWLEDGE BASE — this is everything you know about the business you represent. Use it to pitch, and to answer ANY question the prospect asks (services, pricing, process, company details, policies). If an answer is not in here, say you'll have someone follow up — do NOT make facts up:",
+    "SOUND HUMAN:",
+    "- Talk the way a real person talks on the phone: use contractions (I'm, you're, we'll), short sentences, and the occasional natural filler (\"sure\", \"right\", \"got it\", \"yeah\", \"honestly\").",
+    "- Vary your rhythm — some short replies, some a little longer. Don't be monotone or over-formal, and never sound like you're reading a script.",
+    "- React to what they say first (\"ah, makes sense\", \"totally fair\") before you respond. Show you're actually listening.",
+    "- Be friendly and easygoing, never pushy, salesy, or robotic.",
+    "",
+    "THINK BEFORE YOU SPEAK — this is important:",
+    "- Take a beat and actually consider what they said. Don't blurt, don't ramble, and don't dump everything at once.",
+    "- Make ONE clear point per turn, then pause and let them respond. A phone call is a back-and-forth, not a monologue.",
+    "- If you're not sure what they mean or what they're asking, ask a short clarifying question instead of guessing.",
+    "- Keep turns short. If you catch yourself about to give a long answer, shorten it and offer to go deeper if they want.",
+    "",
+    "KNOWLEDGE BASE — treat this as your ONLY source of truth about the business. You have been trained on exactly this and nothing else. Use it to pitch and to answer ANY question (services, pricing, process, company details, policies):",
     businessInfo || "(no knowledge base provided)",
+    "",
+    "GROUNDING RULES (never break these):",
+    "- Answer ONLY from the knowledge base above. Never invent or guess facts, prices, features, availability, names, or promises.",
+    "- If something isn't in the knowledge base, say so plainly and offer to have the right person follow up — e.g. \"good question, let me get you an exact answer on that and follow up.\" Do NOT make something up to sound confident.",
+    "- If you're unsure, it's better to ask or to promise a follow-up than to say something that might be wrong.",
     aiInstructions && aiInstructions.trim()
-      ? `\nExtra instructions from the business owner — follow these carefully:\n${aiInstructions.trim()}`
+      ? `\nEXTRA INSTRUCTIONS from the business owner — follow these carefully and let them shape your tone and rules:\n${aiInstructions.trim()}`
       : "",
     "",
     `You are calling: ${name || "a prospect"}${contact ? ` (contact: ${contact})` : ""}${industry ? `, industry: ${industry}` : ""}.`,
     "",
-    `Use the script below as a loose guide for structure and intent — do NOT read it verbatim, and if any of it is not in ${lang} just convey the intent naturally in ${lang}:`,
+    `Use the script below only as a loose guide for structure and intent — do NOT read it word for word, and if any of it isn't in ${lang}, just convey the idea naturally in ${lang}:`,
     "----------------",
     scriptText || "(no script provided — improvise a polite intro, a short pitch, and a meeting request)",
     "----------------",
     "",
-    "Goals: (1) introduce yourself and ask if it's a good time; (2) understand their need and present the offer briefly; (3) answer any question they raise accurately, using the knowledge base above; (4) if interested, propose a specific day/time for a 15-20 min meeting and confirm it; (5) if not interested, thank them and end politely.",
-    `Always speak ${lang}. Never fabricate facts. Respect requests not to be called. Open the call by greeting them first.`,
-  ].join("\n");
+    "GOALS (move through these naturally, conversationally — don't rush): (1) greet them, say who you are, and check it's a good moment; (2) ask a question or two to understand their situation before you pitch; (3) give a short, relevant pitch grounded in the knowledge base; (4) answer their questions accurately from the knowledge base; (5) if there's interest, propose a specific day/time for a 15–20 min meeting and confirm it; (6) if not, thank them warmly and end politely.",
+    `Always speak ${lang}. Stay grounded in the knowledge base and never fabricate. Respect any request not to be called and end gracefully. Open the call by greeting them first.`,
+  ].filter((line) => line !== null && line !== undefined).join("\n");
 }
 
 // ── post-call analysis with a cheap model ───────────────────────────────────
@@ -314,7 +337,7 @@ app.post("/api/generate-script", requireAuth, async (req, res) => {
 app.post("/api/ai-call", requireAuth, async (req, res) => {
   const {
     clientId, name, contact, phone, industry, businessInfo, scriptText,
-    openaiKey, twilioSid, twilioToken, twilioFrom, targetLang, aiInstructions,
+    openaiKey, twilioSid, twilioToken, twilioFrom, targetLang, aiInstructions, voice,
   } = req.body || {};
 
   // Resolve credentials: request (UI) first, then server env.
@@ -343,6 +366,7 @@ app.post("/api/ai-call", requireAuth, async (req, res) => {
     status: "in-progress", twilioStatus: "queued", startedAt: new Date().toISOString(),
     openaiKey: oaKey,                       // in-memory only (never persisted/exposed)
     acct: { sid: twSid, token: twToken },   // in-memory only
+    voice: sanitizeVoice(voice),            // agent voice (validated; falls back to default)
     instructions: buildInstructions({ name, contact, industry, businessInfo, scriptText, targetLang, aiInstructions }),
     transcript: [], result: null,
   };
@@ -530,7 +554,7 @@ wss.on("connection", (twilioWs) => {
             },
             output: {
               format: { type: "audio/pcmu" },
-              voice: VOICE,
+              voice: call?.voice || VOICE,
             },
           },
         },
