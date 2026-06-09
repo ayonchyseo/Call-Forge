@@ -43,14 +43,37 @@ const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_FROM_NUMBER = process.env.TWILIO_FROM_NUMBER;  // your Twilio number, E.164 e.g. +15551234567
 // GA Realtime model candidates. If the first isn't accessible on the account/key,
 // the bridge automatically falls back to the next one DURING the call. Override
-// with OPENAI_REALTIME_MODEL to pin a single model (e.g. a cheaper one).
+// with OPENAI_REALTIME_MODEL to pin a single model.
+// Order matters: the FASTEST + cheapest model goes first. gpt-realtime-mini has
+// noticeably lower time-to-first-audio (and lower cost) than the full
+// gpt-realtime — and on a live phone call that response latency is exactly what
+// the prospect notices. The full model and the older preview stay as automatic
+// fallbacks if the mini isn't accessible on the account/key.
 const REALTIME_MODELS = process.env.OPENAI_REALTIME_MODEL
   ? [process.env.OPENAI_REALTIME_MODEL]
-  : ["gpt-realtime", "gpt-realtime-mini", "gpt-4o-realtime-preview"];
+  : ["gpt-realtime-mini", "gpt-realtime", "gpt-4o-realtime-preview"];
 const ANALYSIS_MODEL = process.env.OPENAI_ANALYSIS_MODEL || "gpt-4o-mini";
 const VOICE = process.env.OPENAI_VOICE || "alloy";
 // Hard cap on call length so a stuck/forgotten call can't run up charges.
 const CALL_MAX_SECONDS = Number(process.env.CALL_MAX_SECONDS || 300);
+
+// ── Turn-detection (VAD) tuning ─────────────────────────────────────────────
+// These two knobs control the two things people notice most on a live call:
+// how fast the agent replies, and whether it gets cut off mid-sentence.
+//   • VAD_THRESHOLD  — speech-onset sensitivity (0..1). HIGHER = LESS sensitive.
+//     The old 0.5 was too trigger-happy on a phone line: echo of the agent's own
+//     voice and background noise falsely fired "barge-in", which wipes the audio
+//     OpenAI had already queued on Twilio (OpenAI generates faster than realtime,
+//     so a lot is buffered). The result was the agent going silent partway through
+//     a reply while the FULL reply still showed in the transcript. 0.6 keeps real
+//     interruptions working while stopping those false cut-offs.
+//   • VAD_SILENCE_MS — how long the prospect must pause before the agent speaks.
+//     Lower = snappier responses. 600ms felt sluggish; 500ms is clearly faster
+//     without clipping the prospect mid-thought.
+//   • VAD_PREFIX_MS  — audio retained just before detected speech (unchanged).
+const VAD_THRESHOLD = Number(process.env.VAD_THRESHOLD || 0.6);
+const VAD_SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 500);
+const VAD_PREFIX_MS = Number(process.env.VAD_PREFIX_MS || 300);
 
 // ── tiny JSON file store (fine for a PoC) ───────────────────────────────────
 function loadCalls() {
@@ -455,7 +478,7 @@ wss.on("connection", (twilioWs) => {
           audio: {
             input: {
               format: { type: "audio/pcmu" },
-              turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600 },
+              turn_detection: { type: "server_vad", threshold: VAD_THRESHOLD, prefix_padding_ms: VAD_PREFIX_MS, silence_duration_ms: VAD_SILENCE_MS },
               transcription: { model: "whisper-1" },
             },
             output: {

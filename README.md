@@ -82,9 +82,9 @@ talks to the prospect in English, tries to book a meeting, and writes the outcom
 - **OpenAI Realtime API** listens, thinks, and speaks (speech-to-speech) over that
   stream; a cheap `gpt-4o-mini` call afterward extracts the lead/meeting details.
 
-Lowest-cost defaults are used (`gpt-4o-mini-realtime` for the call, `gpt-4o-mini`
-for analysis). Rough cost ≈ Twilio per-minute (varies by country) + OpenAI realtime
-audio minutes.
+Fast, lowest-cost defaults are used (`gpt-realtime-mini` for the call — picked for
+low response latency as well as cost — and `gpt-4o-mini` for analysis). Rough cost
+≈ Twilio per-minute (varies by country) + OpenAI realtime audio minutes.
 
 **Reliability built in:** Twilio status callbacks mean a no-answer / busy / failed call
 ends cleanly (no infinite spinner), a max-duration cap auto-hangs-up stuck calls so they
