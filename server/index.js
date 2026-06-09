@@ -71,9 +71,26 @@ const CALL_MAX_SECONDS = Number(process.env.CALL_MAX_SECONDS || 300);
 //     Lower = snappier responses. 600ms felt sluggish; 500ms is clearly faster
 //     without clipping the prospect mid-thought.
 //   • VAD_PREFIX_MS  — audio retained just before detected speech (unchanged).
-const VAD_THRESHOLD = Number(process.env.VAD_THRESHOLD || 0.6);
-const VAD_SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 500);
-const VAD_PREFIX_MS = Number(process.env.VAD_PREFIX_MS || 300);
+//
+// Parsed through envNum so a mistyped/out-of-range value can't reach the wire:
+// Number("fast") is NaN, and JSON.stringify turns NaN into null inside
+// session.update — which the GA Realtime API rejects, taking the WHOLE audio
+// config (µ-law format + VAD) down with it and silently leaving the call on the
+// wrong pcm16 default. A bad operator knob must never break the call, so on
+// anything invalid we warn and fall back to the documented default.
+function envNum(name, def, { min, max } = {}) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || (min != null && n < min) || (max != null && n > max)) {
+    console.warn(`⚠  Ignoring ${name}="${raw}" (must be a number${min != null ? ` ≥ ${min}` : ""}${max != null ? ` ≤ ${max}` : ""}) — using default ${def}.`);
+    return def;
+  }
+  return n;
+}
+const VAD_THRESHOLD = envNum("VAD_THRESHOLD", 0.6, { min: 0, max: 1 });
+const VAD_SILENCE_MS = envNum("VAD_SILENCE_MS", 500, { min: 0 });
+const VAD_PREFIX_MS = envNum("VAD_PREFIX_MS", 300, { min: 0 });
 
 // ── tiny JSON file store (fine for a PoC) ───────────────────────────────────
 function loadCalls() {
