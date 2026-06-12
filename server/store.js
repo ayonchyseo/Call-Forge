@@ -28,6 +28,37 @@ let mode = "file";        // 'pg' | 'file'
 const newId = () => crypto.randomUUID();
 const normEmail = (e) => String(e || "").trim().toLowerCase();
 
+// Twilio subaccount auth tokens are secrets we must hand back to Twilio's API
+// later — unlike passwords they can't be one-way hashed. AES-256-GCM with a
+// server-side key keeps them unreadable in the DB/JSON file without it.
+const ENCRYPTION_KEY = crypto.createHash("sha256")
+  .update(process.env.ENCRYPTION_KEY || process.env.JWT_SECRET || "callforge-dev-secret-change-me")
+  .digest();
+if (!process.env.ENCRYPTION_KEY) {
+  console.log("⚠  ENCRYPTION_KEY not set — Twilio subaccount tokens fall back to JWT_SECRET (or a dev key) for encryption.");
+  console.log("   Set ENCRYPTION_KEY to a long random string in production so they stay decryptable across secret rotations.");
+}
+
+export function encryptSecret(plaintext) {
+  if (!plaintext) return "";
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", ENCRYPTION_KEY, iv);
+  const enc = Buffer.concat([cipher.update(String(plaintext), "utf8"), cipher.final()]);
+  return Buffer.concat([iv, cipher.getAuthTag(), enc]).toString("base64");
+}
+
+export function decryptSecret(blob) {
+  if (!blob) return "";
+  try {
+    const buf = Buffer.from(blob, "base64");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", ENCRYPTION_KEY, buf.subarray(0, 12));
+    decipher.setAuthTag(buf.subarray(12, 28));
+    return Buffer.concat([decipher.update(buf.subarray(28)), decipher.final()]).toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
 function rowToUser(r) {
   if (!r) return null;
   return {
@@ -37,12 +68,27 @@ function rowToUser(r) {
     role: r.role,
     status: r.status,
     createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
+    twilio: {
+      status: r.twilio_status || "none",                 // none|pending|active|failed
+      subaccountSid: r.twilio_subaccount_sid || "",
+      subaccountTokenEnc: r.twilio_subaccount_token_enc || "",
+      phoneNumber: r.twilio_phone_number || "",
+      error: r.twilio_error || "",
+    },
   };
 }
 
 // ── file backend ────────────────────────────────────────────────────────────
+// Older file-store records predate the `twilio` field — backfill it on read so
+// every caller can rely on `user.twilio.status` always being present.
+function normalizeUser(u) {
+  return {
+    ...u,
+    twilio: { status: "none", subaccountSid: "", subaccountTokenEnc: "", phoneNumber: "", error: "", ...(u.twilio || {}) },
+  };
+}
 function readFileUsers() {
-  try { return JSON.parse(fs.readFileSync(USERS_FILE, "utf8")); } catch { return []; }
+  try { return JSON.parse(fs.readFileSync(USERS_FILE, "utf8")).map(normalizeUser); } catch { return []; }
 }
 function writeFileUsers(users) {
   fs.mkdirSync(path.dirname(USERS_FILE), { recursive: true });
@@ -67,6 +113,17 @@ export async function init() {
         status        TEXT NOT NULL DEFAULT 'pending',
         created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
       )
+    `);
+    // Added for the platform-Twilio model (auto-provisioned subaccount + phone
+    // number per user — see twilioPlatform.js). ALTER..IF NOT EXISTS so existing
+    // deployments pick these up in place, with no destructive migration.
+    await pool.query(`
+      ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS twilio_status TEXT NOT NULL DEFAULT 'none',
+        ADD COLUMN IF NOT EXISTS twilio_subaccount_sid TEXT NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS twilio_subaccount_token_enc TEXT NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS twilio_phone_number TEXT NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS twilio_error TEXT NOT NULL DEFAULT ''
     `);
     mode = "pg";
     console.log("ℹ  User store: Postgres (durable).");
@@ -114,6 +171,7 @@ export async function createUser({ email, passwordHash, role = "client", status 
     role,
     status,
     createdAt: new Date().toISOString(),
+    twilio: { status: "none", subaccountSid: "", subaccountTokenEnc: "", phoneNumber: "", error: "" },
   };
   if (mode === "pg") {
     await pool.query(
@@ -150,6 +208,45 @@ export async function setUserRole(id, role) {
   const u = users.find((x) => x.id === id);
   if (!u) return null;
   u.role = role;
+  writeFileUsers(users);
+  return u;
+}
+
+// ── platform-Twilio provisioning state (see twilioPlatform.js) ─────────────
+// Two purpose-built mutations rather than one generic patcher: the caller
+// always knows the full new state it wants (mid-flight vs. final), so there's
+// no partial-update ambiguity to handle.
+export async function setTwilioStatus(id, status, error = "") {
+  if (mode === "pg") {
+    const { rows } = await pool.query(
+      "UPDATE users SET twilio_status = $1, twilio_error = $2 WHERE id = $3 RETURNING *",
+      [status, error, id],
+    );
+    return rowToUser(rows[0]);
+  }
+  const users = readFileUsers();
+  const u = users.find((x) => x.id === id);
+  if (!u) return null;
+  u.twilio = { ...u.twilio, status, error };
+  writeFileUsers(users);
+  return u;
+}
+
+export async function setTwilioAccount(id, { subaccountSid, subaccountToken, phoneNumber }) {
+  const subaccountTokenEnc = encryptSecret(subaccountToken);
+  if (mode === "pg") {
+    const { rows } = await pool.query(
+      `UPDATE users SET twilio_status = 'active', twilio_error = '',
+         twilio_subaccount_sid = $1, twilio_subaccount_token_enc = $2, twilio_phone_number = $3
+       WHERE id = $4 RETURNING *`,
+      [subaccountSid, subaccountTokenEnc, phoneNumber, id],
+    );
+    return rowToUser(rows[0]);
+  }
+  const users = readFileUsers();
+  const u = users.find((x) => x.id === id);
+  if (!u) return null;
+  u.twilio = { status: "active", error: "", subaccountSid, subaccountTokenEnc, phoneNumber };
   writeFileUsers(users);
   return u;
 }

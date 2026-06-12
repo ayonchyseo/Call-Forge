@@ -28,6 +28,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as store from "./store.js";
 import { setupAuth, requireAuth } from "./auth.js";
+import * as platform from "./twilioPlatform.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_FILE = path.join(__dirname, "data", "calls.json");
@@ -259,6 +260,7 @@ app.get("/api/health", (_req, res) => {
     publicUrl: Boolean(PUBLIC_URL),
     hasServerOpenAI: Boolean(OPENAI_API_KEY),
     hasServerTwilio: Boolean(TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && TWILIO_FROM_NUMBER),
+    platformTwilio: platform.platformEnabled,
   });
 });
 
@@ -317,11 +319,37 @@ app.post("/api/ai-call", requireAuth, async (req, res) => {
     openaiKey, twilioSid, twilioToken, twilioFrom, targetLang, aiInstructions,
   } = req.body || {};
 
-  // Resolve credentials: request (UI) first, then server env.
   const oaKey = openaiKey || OPENAI_API_KEY;
-  const twSid = twilioSid || TWILIO_ACCOUNT_SID;
-  const twToken = twilioToken || TWILIO_AUTH_TOKEN;
-  const twFrom = twilioFrom || TWILIO_FROM_NUMBER;
+
+  // Resolve Twilio credentials, in priority order:
+  //   1. Platform subaccount — auto-provisioned for this user at approval time
+  //      ("become the platform": zero Twilio/KYC setup for them, and their
+  //      usage lands on their own number, isolated for metering/billing).
+  //   2. BYOK — their own keys from ⚙ Settings (still fully supported).
+  //   3. Server env — single-operator fallback, but ONLY when platform mode is
+  //      off; otherwise an unprovisioned user would silently place calls on
+  //      YOUR master account instead of their own metered subaccount.
+  const ut = req.user.twilio || {};
+  const byok = Boolean(twilioSid && twilioToken && twilioFrom);
+  let twSid, twToken, twFrom;
+  if (ut.status === "active" && ut.subaccountSid) {
+    twSid = ut.subaccountSid;
+    twToken = store.decryptSecret(ut.subaccountTokenEnc);
+    twFrom = ut.phoneNumber;
+  } else if (byok) {
+    twSid = twilioSid; twToken = twilioToken; twFrom = twilioFrom;
+  } else if (!platform.platformEnabled) {
+    twSid = TWILIO_ACCOUNT_SID; twToken = TWILIO_AUTH_TOKEN; twFrom = TWILIO_FROM_NUMBER;
+  }
+
+  if (!twSid && platform.platformEnabled) {
+    const waiting = ut.status === "pending" || ut.status === "none";
+    return res.status(waiting ? 503 : 500).json({
+      error: waiting
+        ? "Your CallForge number is still being set up (usually under a minute after approval) — try again shortly, or add your own Twilio keys in ⚙ Settings to call right away."
+        : `We couldn't set up your CallForge number automatically${ut.error ? ` (${ut.error})` : ""}. Add your own Twilio keys in ⚙ Settings, or contact support to retry.`,
+    });
+  }
 
   const missing = [];
   if (!oaKey) missing.push("OpenAI key");
@@ -335,6 +363,15 @@ app.post("/api/ai-call", requireAuth, async (req, res) => {
   const number = String(phone || "").replace(/[^+\d]/g, "");
   if (!number || number.length < 8 || !number.startsWith("+")) {
     return res.status(400).json({ error: "Invalid phone number — use full international format, e.g. +14155550142." });
+  }
+
+  // Catch a malformed "From" number here with a clear message — otherwise Twilio
+  // rejects the call with a cryptic "not yet verified for your account" error that
+  // looks like a CallForge bug but is really a missing "+" / country code. (Platform-
+  // provisioned numbers are always well-formed; this guards the BYOK/server-env paths.)
+  const fromNumber = String(twFrom || "").replace(/[^+\d]/g, "");
+  if (!fromNumber || fromNumber.length < 8 || !fromNumber.startsWith("+")) {
+    return res.status(400).json({ error: `Twilio "From" number "${twFrom}" isn't in international format. It must start with + and the country code, e.g. +14155550142 — fix it in ⚙ Settings (or TWILIO_FROM_NUMBER on the server) to match exactly what's shown in your Twilio Console.` });
   }
 
   const callId = crypto.randomUUID();
@@ -379,7 +416,12 @@ app.post("/api/ai-call", requireAuth, async (req, res) => {
       calls[callId].status = "completed";
       calls[callId].result = { ...cannedOutcome("twilio-failed"), transcript: "", endedReason: data?.message || "twilio-rejected" };
       saveCalls();
-      return res.status(r.status).json({ error: data?.message || "Twilio rejected the call", details: data });
+      // Twilio's numeric `code` + `more_info` link pinpoint the EXACT restriction —
+      // "Account not allowed to call X" alone can mean geo-permissions, a fraud/risk
+      // hold, a blocked-number list, etc. Surface both so the user (or Twilio support)
+      // can look up precisely which one fired instead of guessing from the message text.
+      const twilioRef = data?.code ? ` (Twilio error ${data.code}${data.more_info ? ` — see ${data.more_info}` : ""})` : "";
+      return res.status(r.status).json({ error: `${data?.message || "Twilio rejected the call"}${twilioRef}`, details: data });
     }
     calls[callId].twilioSid = data.sid;
     saveCalls();
