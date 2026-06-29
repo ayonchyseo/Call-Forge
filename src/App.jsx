@@ -193,6 +193,8 @@ function scriptToText(script) {
 const DEFAULT_SETTINGS = {
   targetLang: "English",
   aiInstructions: "",
+  voice: "marin",
+  accent: "Default",
   openaiKey: "",
   twilioSid: "",
   twilioToken: "",
@@ -200,6 +202,27 @@ const DEFAULT_SETTINGS = {
 };
 
 const LANGUAGES = ["English", "Spanish", "French", "German", "Portuguese", "Arabic", "Hindi", "Bangla", "Chinese", "Japanese"];
+
+// Agent voices. The newer GA voices (Marin, Cedar) sound noticeably more human
+// than the older Alloy; the rest give a range of timbres. The label is friendly,
+// the value is the exact OpenAI voice id sent to the Realtime API.
+const VOICES = [
+  { value: "marin", label: "Marin — natural, warm (recommended)" },
+  { value: "cedar", label: "Cedar — natural, calm" },
+  { value: "alloy", label: "Alloy — neutral" },
+  { value: "echo", label: "Echo — crisp" },
+  { value: "shimmer", label: "Shimmer — bright" },
+  { value: "sage", label: "Sage — soft" },
+  { value: "coral", label: "Coral — friendly" },
+  { value: "ash", label: "Ash — steady" },
+  { value: "ballad", label: "Ballad — expressive" },
+  { value: "verse", label: "Verse — lively" },
+];
+
+// Optional spoken accent. "Default" lets the chosen voice decide. The rest are a
+// soft steer applied through the agent's instructions (the Realtime API has no
+// hard accent control), useful for matching a target market like the Gulf or India.
+const ACCENTS = ["Default", "American English", "British English", "Australian English", "Indian English", "Gulf Arabic", "Egyptian Arabic", "Levantine Arabic", "Castilian Spanish", "Latin American Spanish"];
 
 // Short code for the target language, shown in the header badge.
 function langShort(lang) {
@@ -393,9 +416,21 @@ function SettingsModal({ settings, onSave, onClose, onReset }) {
         <button onClick={() => { onSave(d); onClose(); }} style={btn(`${ACCENT}22`, ACCENT, `${ACCENT}66`)}>Save</button>
       </>}
     >
-      <Field label="Script & call language" hint="Business info can be in any language — scripts and the AI agent will use this language.">
+      <Field label="Script & call language" hint="The language the agent opens the call in. If the prospect replies in another language (e.g. Arabic or Hindi), the agent switches to match them automatically.">
         <select style={modalInp} value={d.targetLang} onChange={(e) => set("targetLang", e.target.value)}>
           {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
+        </select>
+      </Field>
+
+      <Field label="Agent voice" hint="The AI agent's voice on live calls. Marin & Cedar sound the most human (need the full gpt-realtime model).">
+        <select style={modalInp} value={d.voice} onChange={(e) => set("voice", e.target.value)}>
+          {VOICES.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
+        </select>
+      </Field>
+
+      <Field label="Spoken accent" hint="Optional — nudges the agent toward a regional accent (e.g. Gulf Arabic, Indian English). 'Default' lets the voice decide.">
+        <select style={modalInp} value={d.accent} onChange={(e) => set("accent", e.target.value)}>
+          {ACCENTS.map((a) => <option key={a} value={a}>{a}</option>)}
         </select>
       </Field>
 
@@ -643,6 +678,8 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
           twilioFrom: settings.twilioFrom,
           targetLang: settings.targetLang,
           aiInstructions: settings.aiInstructions,
+          voice: settings.voice,
+          accent: settings.accent,
         }),
       });
       // Only log out on a genuine auth failure (expired/invalid token).

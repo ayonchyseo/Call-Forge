@@ -44,16 +44,20 @@ const TWILIO_FROM_NUMBER = process.env.TWILIO_FROM_NUMBER;  // your Twilio numbe
 // GA Realtime model candidates. If the first isn't accessible on the account/key,
 // the bridge automatically falls back to the next one DURING the call. Override
 // with OPENAI_REALTIME_MODEL to pin a single model.
-// Order matters: the FASTEST + cheapest model goes first. gpt-realtime-mini has
-// noticeably lower time-to-first-audio (and lower cost) than the full
-// gpt-realtime — and on a live phone call that response latency is exactly what
-// the prospect notices. The full model and the older preview stay as automatic
-// fallbacks if the mini isn't accessible on the account/key.
+// Order matters: the most NATURAL-sounding model goes first. The full
+// gpt-realtime speaks far less robotically than the mini and is the only model
+// that supports the newest human-like voices (marin, cedar) — on a sales call
+// the prospect notices "this sounds like a bot" more than a little extra
+// latency. gpt-realtime-mini (lower latency + cost) and the older preview stay
+// as automatic fallbacks if the full model isn't accessible on the account/key.
+// Pin OPENAI_REALTIME_MODEL=gpt-realtime-mini if you'd rather have min latency.
 const REALTIME_MODELS = process.env.OPENAI_REALTIME_MODEL
   ? [process.env.OPENAI_REALTIME_MODEL]
-  : ["gpt-realtime-mini", "gpt-realtime", "gpt-4o-realtime-preview"];
+  : ["gpt-realtime", "gpt-realtime-mini", "gpt-4o-realtime-preview"];
 const ANALYSIS_MODEL = process.env.OPENAI_ANALYSIS_MODEL || "gpt-4o-mini";
-const VOICE = process.env.OPENAI_VOICE || "alloy";
+// Default voice. "marin" is one of the newer GA voices and sounds markedly more
+// human than the older "alloy"; per-call the UI can override this in Settings.
+const VOICE = process.env.OPENAI_VOICE || "marin";
 // Hard cap on call length so a stuck/forgotten call can't run up charges.
 const CALL_MAX_SECONDS = Number(process.env.CALL_MAX_SECONDS || 300);
 
@@ -122,10 +126,24 @@ function saveCalls() {
 const calls = loadCalls();
 
 // ── the agent's instructions for one client ─────────────────────────────────
-function buildInstructions({ name, contact, industry, businessInfo, scriptText, targetLang, aiInstructions }) {
+function buildInstructions({ name, contact, industry, businessInfo, scriptText, targetLang, aiInstructions, accent }) {
   const lang = (targetLang || "English").trim() || "English";
+  // Optional spoken accent ("Default" / "" = let the voice decide). This is a
+  // soft steer in the prompt — the Realtime model has no hard accent knob, so we
+  // ask it to colour the same language with a regional accent (e.g. Gulf Arabic,
+  // Indian English) when the user picks one.
+  const acc = (accent || "").trim();
+  const accentLine = acc && acc.toLowerCase() !== "default"
+    ? `Speak with a natural ${acc} accent (keep it authentic, never a caricature).`
+    : "";
   return [
-    `You are a professional cold-calling sales agent on an outbound phone call. Speak natural, warm, conversational ${lang}. Be polite and concise, never robotic or pushy. Keep your turns short like a real phone conversation.`,
+    `You are a professional cold-calling sales agent on an outbound phone call. Speak in a natural, warm, conversational way — like a real person, not a script reader. Be polite and concise, never robotic or pushy. Keep your turns short like a real phone conversation.`,
+    accentLine,
+    // Language policy: open in the chosen language, but MIRROR the prospect. A
+    // prospect in Dubai may answer in Arabic or Hindi even though the campaign
+    // language is English — the model understands them either way, so it should
+    // follow their lead instead of forcing one language on them.
+    `LANGUAGE: Begin the call in ${lang}. If the prospect replies in — or switches to — another language (for example Arabic or Hindi), switch to that language and continue the rest of the call in whichever language they are most comfortable with. Always answer in the language the prospect just used; never insist on ${lang} if they prefer another.`,
     "",
     "KNOWLEDGE BASE — this is everything you know about the business you represent. Use it to pitch, and to answer ANY question the prospect asks (services, pricing, process, company details, policies). If an answer is not in here, say you'll have someone follow up — do NOT make facts up:",
     businessInfo || "(no knowledge base provided)",
@@ -135,13 +153,13 @@ function buildInstructions({ name, contact, industry, businessInfo, scriptText, 
     "",
     `You are calling: ${name || "a prospect"}${contact ? ` (contact: ${contact})` : ""}${industry ? `, industry: ${industry}` : ""}.`,
     "",
-    `Use the script below as a loose guide for structure and intent — do NOT read it verbatim, and if any of it is not in ${lang} just convey the intent naturally in ${lang}:`,
+    `Use the script below as a loose guide for structure and intent — do NOT read it verbatim, and convey its intent naturally in whichever language you are currently speaking with the prospect:`,
     "----------------",
     scriptText || "(no script provided — improvise a polite intro, a short pitch, and a meeting request)",
     "----------------",
     "",
     "Goals: (1) introduce yourself and ask if it's a good time; (2) understand their need and present the offer briefly; (3) answer any question they raise accurately, using the knowledge base above; (4) if interested, propose a specific day/time for a 15-20 min meeting and confirm it; (5) if not interested, thank them and end politely.",
-    `Always speak ${lang}. Never fabricate facts. Respect requests not to be called. Open the call by greeting them first.`,
+    `Match the prospect's language as described above. Never fabricate facts. Respect requests not to be called. Open the call by greeting them first.`,
   ].join("\n");
 }
 
@@ -315,6 +333,7 @@ app.post("/api/ai-call", requireAuth, async (req, res) => {
   const {
     clientId, name, contact, phone, industry, businessInfo, scriptText,
     openaiKey, twilioSid, twilioToken, twilioFrom, targetLang, aiInstructions,
+    voice, accent,
   } = req.body || {};
 
   // Resolve credentials: request (UI) first, then server env.
@@ -343,7 +362,8 @@ app.post("/api/ai-call", requireAuth, async (req, res) => {
     status: "in-progress", twilioStatus: "queued", startedAt: new Date().toISOString(),
     openaiKey: oaKey,                       // in-memory only (never persisted/exposed)
     acct: { sid: twSid, token: twToken },   // in-memory only
-    instructions: buildInstructions({ name, contact, industry, businessInfo, scriptText, targetLang, aiInstructions }),
+    voice: (typeof voice === "string" && voice.trim()) ? voice.trim() : VOICE,
+    instructions: buildInstructions({ name, contact, industry, businessInfo, scriptText, targetLang, aiInstructions, accent }),
     transcript: [], result: null,
   };
   saveCalls();
@@ -472,7 +492,25 @@ wss.on("connection", (twilioWs) => {
       while (pending.length && ws.readyState === WebSocket.OPEN) ws.send(pending.shift());
     } else {
       pending.length = 0; // discard partial outage audio; let fresh speech drive
-      log("session re-armed after reconnect → resuming the conversation");
+      // A reconnected socket is a BRAND-NEW Realtime session — it has none of the
+      // conversation so far, only the static instructions. Without the history it
+      // "wakes up" with amnesia and re-greets / re-pitches lines it already said,
+      // which is exactly the "the bot keeps repeating itself" symptom. Replay a
+      // compact transcript so it continues the SAME conversation instead of
+      // restarting it. We only prime context here (no response.create) so the
+      // prospect's next words drive the next turn, not a fresh monologue.
+      const history = (calls[callId]?.transcript || [])
+        .map((t) => `${t.role === "agent" ? "You" : "Prospect"}: ${t.text}`.trim())
+        .filter(Boolean)
+        .join("\n");
+      if (history) {
+        ws.send(JSON.stringify({
+          type: "conversation.item.create",
+          item: { type: "message", role: "user", content: [{ type: "input_text", text:
+            `[Reconnected after a brief network drop — the call is still live.] Here is the conversation so far:\n${history}\n\nContinue naturally from this exact point. Do NOT greet again, do NOT restart your introduction, and do NOT repeat anything you already said.` }] },
+        }));
+      }
+      log(`session re-armed after reconnect → resuming the conversation${history ? " (replayed prior context)" : ""}`);
     }
   }
 
@@ -490,6 +528,17 @@ wss.on("connection", (twilioWs) => {
     const key = call?.openaiKey || OPENAI_API_KEY;
     if (!key) { log("✗ no OpenAI key available"); recordError("No OpenAI key provided."); return finalize("openai-error"); }
     const model = REALTIME_MODELS[modelIdx];
+    // Resolve the voice for THIS model. The newest voices (marin/cedar) only
+    // exist on the current GA models — the legacy gpt-4o-realtime-preview
+    // fallback doesn't know them, and an unsupported voice value makes the GA
+    // API reject the whole session.update (which would silently break the µ-law
+    // audio config, exactly the failure the format comments below warn about).
+    // So if we've fallen back to the legacy model, downgrade to a voice it
+    // accepts rather than risk a dead call.
+    const NEW_VOICES = new Set(["marin", "cedar"]);
+    const wantVoice = call?.voice || VOICE;
+    const effVoice = (model === "gpt-4o-realtime-preview" && NEW_VOICES.has(wantVoice)) ? "alloy" : wantVoice;
+    if (effVoice !== wantVoice) log(`voice "${wantVoice}" unsupported on ${model} → using "${effVoice}"`);
     log(`connecting to OpenAI Realtime (GA) — model ${modelIdx + 1}/${REALTIME_MODELS.length}: ${model}`);
     // GA Realtime API: /v1/realtime, NO "OpenAI-Beta" header (that's the retired beta).
     const ws = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`, {
@@ -530,7 +579,7 @@ wss.on("connection", (twilioWs) => {
             },
             output: {
               format: { type: "audio/pcmu" },
-              voice: VOICE,
+              voice: effVoice,
             },
           },
         },
