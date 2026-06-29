@@ -58,6 +58,25 @@ const ANALYSIS_MODEL = process.env.OPENAI_ANALYSIS_MODEL || "gpt-4o-mini";
 // Default voice. "marin" is one of the newer GA voices and sounds markedly more
 // human than the older "alloy"; per-call the UI can override this in Settings.
 const VOICE = process.env.OPENAI_VOICE || "marin";
+// Input transcription model. whisper-1 is notorious for HALLUCINATING text on a
+// silent/noisy phone line — it invents "thank you", "bye", "you", etc. when
+// nobody is actually speaking. Those phantom lines pollute the transcript AND
+// the post-call analysis, which is how a totally silent test call can come back
+// with a fake conversation and a fake booked meeting. gpt-4o-mini-transcribe
+// hallucinates far less on non-speech, so it's the safer default for telephony.
+// Override with OPENAI_TRANSCRIBE_MODEL (e.g. whisper-1, gpt-4o-transcribe).
+const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe";
+// Optional input noise reduction — helps a noisy/echoey line stop firing false
+// "the prospect is talking" turns (the agent talking to its own echo). OFF by
+// default so it can't alter the proven session.update shape unless you opt in;
+// set OPENAI_INPUT_NOISE_REDUCTION=far_field (recommended for phone calls) or
+// near_field to enable.
+const NOISE_REDUCTION = (() => {
+  const v = (process.env.OPENAI_INPUT_NOISE_REDUCTION || "off").toLowerCase().trim();
+  if (v === "far_field" || v === "near_field") return v;
+  if (v && v !== "off") console.warn(`⚠  Ignoring OPENAI_INPUT_NOISE_REDUCTION="${v}" (use far_field, near_field, or off).`);
+  return null;
+})();
 // Hard cap on call length so a stuck/forgotten call can't run up charges.
 const CALL_MAX_SECONDS = Number(process.env.CALL_MAX_SECONDS || 300);
 
@@ -158,8 +177,15 @@ function buildInstructions({ name, contact, industry, businessInfo, scriptText, 
     scriptText || "(no script provided — improvise a polite intro, a short pitch, and a meeting request)",
     "----------------",
     "",
-    "Goals: (1) introduce yourself and ask if it's a good time; (2) understand their need and present the offer briefly; (3) answer any question they raise accurately, using the knowledge base above; (4) if interested, propose a specific day/time for a 15-20 min meeting and confirm it; (5) if not interested, thank them and end politely.",
-    `Match the prospect's language as described above. Never fabricate facts. Respect requests not to be called. Open the call by greeting them first.`,
+    "IMPORTANT — STAY GROUNDED IN WHAT IS ACTUALLY SAID:",
+    "- Respond ONLY to what the prospect genuinely says. Never invent, assume, or put words in their mouth, and never carry on a conversation you imagined.",
+    "- A phone line carries silence, echo and background noise that can be mis-heard as stray short words like \"thank you\", \"bye\", \"hello\", \"okay\", \"you\". Treat such isolated fragments as NOT a real answer — do not build a conversation on them.",
+    "- If you are not getting clear, relevant replies, ask ONCE: \"Hello, can you hear me okay?\" If there is still no clear response, briefly say you'll try another time, say goodbye, and stop talking. Do NOT keep speaking into silence.",
+    "- NEVER treat a meeting as agreed unless the prospect clearly and explicitly accepts a specific time in their OWN words. If they say goodbye, go quiet, or are unclear, there is NO meeting — do not 'confirm' or 'lock in' anything.",
+    "- Once the prospect signals they want to end the call, do not keep proposing new times — thank them and close.",
+    "",
+    "Goals: (1) introduce yourself and ask if it's a good time; (2) understand their need and present the offer briefly; (3) answer any question they raise accurately, using the knowledge base above; (4) ONLY if they show genuine, explicit interest, propose a specific day/time for a 15-20 min meeting — and confirm it only after they clearly accept it in their own words; (5) if not interested or unresponsive, thank them and end politely.",
+    `Match the prospect's language as described above. Never fabricate facts, never fabricate the prospect's side of the conversation, and never report a meeting that was not clearly agreed. Respect requests not to be called. Open the call by greeting them first.`,
   ].join("\n");
 }
 
@@ -182,7 +208,11 @@ async function analyzeTranscript(transcript, apiKey) {
         model: ANALYSIS_MODEL,
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "Extract structured outcome from a sales cold-call transcript. Reply ONLY with JSON: {\"isLead\":bool, \"interestLevel\":\"high|medium|low|none\", \"meetingRequested\":bool, \"meetingTime\":string, \"summary\":string}." },
+          { role: "system", content:
+            "You extract the outcome of a sales cold-call transcript. Be STRICT and skeptical: phone transcripts often contain mis-heard silence or noise on the prospect's side (stray 'thank you', 'bye', 'hello', 'you', or repeated/garbled words) that is NOT a real reply. " +
+            "Only set isLead=true or meetingRequested=true when the PROSPECT, in their own words, clearly and explicitly expressed interest or agreed to a specific meeting. Do NOT infer agreement from the agent's words, from filler, or from ambiguous/garbled text. " +
+            "If the prospect gave no clear, substantive replies (silence, one-word fragments, or noise), set everything to false/none and say so in the summary. Never output a meetingTime the prospect did not clearly accept. " +
+            "Reply ONLY with JSON: {\"isLead\":bool, \"interestLevel\":\"high|medium|low|none\", \"meetingRequested\":bool, \"meetingTime\":string, \"summary\":string}." },
           { role: "user", content: transcript.slice(0, 12000) },
         ],
       }),
@@ -232,6 +262,33 @@ async function hangupTwilio(call) {
   } catch { /* best effort */ }
 }
 
+// Filler / subtitle-style words the transcriber hallucinates on a silent or
+// noisy line ("thank you for watching", "bye bye", "you", …). Matched at the
+// WORD level so even a repeated "thank you. thank you. thank you." collapses to
+// nothing real. Deliberately omits yes/no/sure: short, but CAN be genuine.
+const FILLER_WORDS = new Set([
+  "thank", "thanks", "you", "your", "for", "watching", "subscribe",
+  "bye", "goodbye", "good", "hello", "hi", "hey", "yeah",
+  "uh", "uhh", "um", "umm", "mm", "mmm", "hmm", "ah", "oh", "okay", "ok",
+]);
+
+// Did the prospect actually say something real? Used to avoid running lead
+// extraction on a call where the "prospect" turns are just mis-heard silence —
+// which is exactly how a silent test call produced a fake booked meeting. A turn
+// counts as genuine only once the filler words are stripped and something real
+// remains (a couple of words, or one clearly substantive ≥6-char word).
+function hasGenuineProspectSpeech(transcript) {
+  return (transcript || []).some((t) => {
+    if (t.role !== "prospect") return false;
+    // Keep letters/numbers across scripts (Bangla, Arabic, …); turn punctuation
+    // into spaces (so "bye-bye" → "bye bye") and collapse runs of whitespace.
+    const clean = (t.text || "").toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+    if (!clean) return false;
+    const meaningful = clean.split(" ").filter((w) => w && !FILLER_WORDS.has(w));
+    return meaningful.length >= 2 || meaningful.some((w) => w.length >= 6);
+  });
+}
+
 // Mark a call finished, run analysis (or a canned outcome), and persist.
 // Idempotent: safe to call from the websocket, the status callback, or a timer.
 function finalizeCall(call, reason) {
@@ -240,7 +297,7 @@ function finalizeCall(call, reason) {
   call.endedAt = new Date().toISOString();
   call.endedReason = reason || "";
   const text = call.transcript.map((t) => `${t.role}: ${t.text}`.trim()).filter(Boolean).join("\n");
-  if (text.trim()) {
+  if (text.trim() && hasGenuineProspectSpeech(call.transcript)) {
     analyzeTranscript(text, call.openaiKey)
       .then((analysis) => {
         call.result = { ...analysis, transcript: text, endedReason: reason || "" };
@@ -253,6 +310,18 @@ function finalizeCall(call, reason) {
         call.result = { ...cannedOutcome(reason), transcript: text, endedReason: reason || "" };
         saveCalls();
       });
+  } else if (text.trim()) {
+    // There IS transcript text, but the prospect never genuinely spoke — almost
+    // certainly a silent/echoey line that the transcriber hallucinated into
+    // "speech". Do NOT run lead extraction on it (that path is what turned a
+    // silent call into a fake meeting). Record a clear non-lead, keep the raw
+    // text so it's auditable rather than hidden.
+    call.result = {
+      isLead: false, interestLevel: "none", meetingRequested: false, meetingTime: "",
+      summary: "No genuine response from the prospect — the line appears to have been silent or unclear, and any text is likely mis-heard noise. Not counted as a lead.",
+      transcript: text, endedReason: reason || "",
+    };
+    saveCalls();
   } else {
     const base = cannedOutcome(reason);
     if (call.lastError) base.summary = `AI error: ${call.lastError}`;
@@ -574,8 +643,11 @@ wss.on("connection", (twilioWs) => {
           audio: {
             input: {
               format: { type: "audio/pcmu" },
+              // Only present when explicitly enabled — keeps the default
+              // session.update shape byte-for-byte identical to the proven one.
+              ...(NOISE_REDUCTION ? { noise_reduction: { type: NOISE_REDUCTION } } : {}),
               turn_detection: { type: "server_vad", threshold: VAD_THRESHOLD, prefix_padding_ms: VAD_PREFIX_MS, silence_duration_ms: VAD_SILENCE_MS },
-              transcription: { model: "whisper-1" },
+              transcription: { model: TRANSCRIBE_MODEL },
             },
             output: {
               format: { type: "audio/pcmu" },
