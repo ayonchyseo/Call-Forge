@@ -6,3 +6,5 @@ dist/
 server/.env
 server/data/calls.json
 server/data/users.json
+server/data/campaigns.json
+server/data/attempts.json

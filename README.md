@@ -15,6 +15,7 @@ calling to the **US, UK, AU, and NZ**.
 - ⚙ **In-app Settings** — Save your OpenAI/Twilio keys, target language, AI call instructions, and backend URL right in the browser (no `.env` editing required).
 - 📞 **Manual Calling** — Tap-to-dial (`tel:`) with a call timer and notes
 - 🤖 **AI Auto-Calling** — An AI agent dials the number itself, holds the conversation, tries to book a meeting, and logs the outcome (see below)
+- 📋 **Bulk Calling Campaigns** — Select many numbers and let the bot work the whole list on a schedule: timezone-aware **office-hours** windows (with per-country overrides), automatic **retries** for missed/declined numbers, overflow rolled to the next day, and a live dashboard of **Attended / Missed / Declined** outcomes (see below)
 - 📊 **Lead Status & Live Stats** — Track Lead ✓ / Follow-up ↺ / Declined ✗ with at-a-glance conversion counts
 - ↓ **Export** — Download all clients, statuses, and notes as CSV
 - ❓ **Built-in Help** — A "How to use" guide is one click away in the header
@@ -93,6 +94,42 @@ can't run up charges, and barge-in lets the prospect interrupt the agent natural
 > ⚠️ **Compliance:** automated/AI cold calls to the US, UK, AU, and NZ are regulated
 > (e.g. TCPA, AI-disclosure and do-not-call rules). Confirm consent and disclosure
 > requirements before running real campaigns. Test on your own number first.
+
+## Bulk Calling Campaigns
+
+Instead of dialing one lead at a time, tick several clients in the list and press
+**📋 Start Campaign**. The server then dials the whole list autonomously — it keeps
+running even if you close the browser — and shows you a live, per-number dashboard.
+
+**How it decides when to call**
+- **Office hours only.** You pick a default country/timezone and one or more
+  daily **time windows** (e.g. Bangladesh `10:00–18:00`, or a split day
+  `10:00–13:00` + `15:00–18:00`). The bot never dials outside them.
+- **Per-country overrides.** Add rules so, say, `+44` numbers are dialed at UK
+  hours and `+1` numbers at US hours, while everything else uses the default. The
+  longest matching calling-code prefix wins.
+- **Days of week.** Toggle which weekdays are allowed (handy for local weekends).
+- **Overflow rolls over.** Anything not reached before a window closes is
+  automatically rescheduled to the next open window — i.e. the next day.
+
+**How it tracks outcomes** (live on the campaign dashboard)
+- **Attended** — the prospect picked up and a real conversation happened. *Done.*
+- **Missed** — the call rang out / failed to connect (no-answer, failed).
+- **Declined** — the prospect actively rejected the call (busy, canceled).
+- **Missed & Declined are retried** after a configurable delay (default **2 hours**),
+  re-clamped back into office hours, up to **Max attempts** (default **3** total).
+- **Do-not-call** — if the prospect explicitly asks not to be contacted, the
+  number is finished and never retried (a compliance safeguard).
+
+**Pace & control.** Set how many calls run **concurrently** (default 1). Pause,
+resume, or cancel a campaign at any time. A campaign uses your **Knowledge Base**
+and **Settings** (keys, language, voice) just like single AI calls.
+
+> ⚙ **Durability:** for campaigns that survive a server redeploy, set
+> `DATABASE_URL` (Postgres) on the server — otherwise the queue lives in an
+> ephemeral file. Call credentials are kept in server memory only (never written
+> to disk); after a restart a campaign falls back to the server-env keys, or
+> pauses itself if none are set so you can re-supply them and resume.
 
 ## Tech Stack
 

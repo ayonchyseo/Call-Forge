@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import AuthScreen from "./Auth.jsx";
 import AdminPanel from "./AdminPanel.jsx";
+import { CampaignsView, CampaignSetup } from "./Campaigns.jsx";
 import { getApiBase, getToken, setToken, apiJson } from "./api.js";
 import {
   BG, CARD, BORDER, TEXT, MUTED, ACCENT, ACCENT_TEXT, WARN, DANGER, INFO,
@@ -497,6 +498,7 @@ function HelpModal({ onClose }) {
       <div style={li}>• <b>⚡ Generate Script</b> → personalized script for the selected lead.</div>
       <div style={li}>• <b>📞 Call Now</b> → dials from your phone (tap-to-dial), you read the script.</div>
       <div style={li}>• <b>🤖 AI Call</b> → the AI agent dials and talks (needs the backend, below).</div>
+      <div style={li}>• <b>📋 Start Campaign</b> → tick several clients, then bulk-call them on a schedule (office hours, auto-retries, live Attended/Missed/Declined dashboard). Open <b>📋 Campaigns</b> up top to track them.</div>
 
       <div style={h}>5 · Live AI calls need the call server</div>
       <div style={p}>A real phone call runs through the CallForge server (Twilio streams the call audio to it) — the same server this app already talks to. Just add your <b>Twilio keys</b> in ⚙ Settings, and make sure the server has <code>PUBLIC_URL</code> set to its public https URL. See the README for steps.</div>
@@ -529,6 +531,11 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
   const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...loadState(K("settings"), {}) }));
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  // Bulk calling: which clients are ticked, plus the campaign setup/view state.
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [showCampaignSetup, setShowCampaignSetup] = useState(false);
+  const [showCampaigns, setShowCampaigns] = useState(false);
+  const [openCampaignId, setOpenCampaignId] = useState(null);
   const fileRef = useRef();
   const timerRef = useRef();
   const aiPollRef = useRef();
@@ -810,6 +817,23 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
     toast("Notes cleared");
   }
 
+  // ── Bulk selection (for campaigns) ────────────────────────────────────────
+  function toggleSelect(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+  function toggleSelectAll(ids) {
+    setSelectedIds((prev) => {
+      const allChosen = ids.length > 0 && ids.every((id) => prev.has(id));
+      if (allChosen) { const next = new Set(prev); ids.forEach((id) => next.delete(id)); return next; }
+      return new Set([...prev, ...ids]);
+    });
+  }
+  const selectedClients = clients.filter((c) => selectedIds.has(c.id));
+
   function exportCSV() {
     const headers = ["Name", "Contact", "Phone", "Industry", "Status", "Notes"];
     const rows = clients.map((c) =>
@@ -872,6 +896,22 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
 
       {showSettings && <SettingsModal settings={settings} onSave={(s) => { setSettings(s); toast("Settings saved"); }} onClose={() => setShowSettings(false)} onReset={resetMyData} />}
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+      {showCampaignSetup && (
+        <CampaignSetup
+          clients={selectedClients}
+          settings={settings}
+          businessInfo={businessInfo}
+          token={token}
+          toast={toast}
+          onClose={() => setShowCampaignSetup(false)}
+          onCreated={(campaign) => {
+            setShowCampaignSetup(false);
+            setSelectedIds(new Set());
+            setOpenCampaignId(campaign?.id || null);
+            setShowCampaigns(true);
+          }}
+        />
+      )}
 
       {/* ── Header ── */}
       <div style={{ borderBottom: `1px solid ${BORDER}`, padding: "14px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", background: CARD, boxShadow: SHADOW, position: "relative", zIndex: 5, flexShrink: 0 }}>
@@ -888,6 +928,9 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
           </button>
           <button onClick={() => setShowSettings(true)} title="Settings & API keys" style={{ background: settings.openaiKey ? `${ACCENT}18` : "transparent", border: `1px solid ${settings.openaiKey ? `${ACCENT}66` : BORDER}`, borderRadius: "5px", color: settings.openaiKey ? ACCENT : MUTED, padding: "5px 11px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>
             ⚙ Settings
+          </button>
+          <button onClick={() => { setShowCampaigns(true); setOpenCampaignId(null); }} title="Bulk calling campaigns" style={{ background: showCampaigns ? `${ACCENT}18` : "transparent", border: `1px solid ${showCampaigns ? `${ACCENT}66` : BORDER}`, borderRadius: "5px", color: showCampaigns ? ACCENT : MUTED, padding: "5px 11px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>
+            📋 Campaigns
           </button>
           <button onClick={exportCSV} style={{ background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "5px", color: MUTED, padding: "5px 12px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>
             ↓ Export
@@ -909,6 +952,14 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
       </div>
 
       {/* ── Body ── */}
+      {showCampaigns ? (
+        <CampaignsView
+          token={token}
+          toast={toast}
+          openId={openCampaignId}
+          onBack={() => { setShowCampaigns(false); setOpenCampaignId(null); }}
+        />
+      ) : (
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
 
         {/* ── Sidebar ── */}
@@ -979,9 +1030,26 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
 
           {/* Client list */}
           <div style={{ flex: 1, overflowY: "auto", padding: "10px 12px" }}>
-            <div style={{ fontSize: "10px", letterSpacing: "0.12em", color: MUTED, textTransform: "uppercase", marginBottom: "8px", paddingLeft: "4px" }}>
-              Clients ({filteredClients.length}{search ? ` of ${clients.length}` : ""})
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px", paddingLeft: "4px", gap: "8px" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "10px", letterSpacing: "0.12em", color: MUTED, textTransform: "uppercase", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={filteredClients.length > 0 && filteredClients.every((c) => selectedIds.has(c.id))}
+                  onChange={() => toggleSelectAll(filteredClients.map((c) => c.id))}
+                  style={{ cursor: "pointer" }}
+                />
+                Clients ({filteredClients.length}{search ? ` of ${clients.length}` : ""})
+              </label>
+              {selectedIds.size > 0 && <span style={{ fontSize: "10px", color: ACCENT, fontWeight: 700 }}>{selectedIds.size} ✓</span>}
             </div>
+            {selectedIds.size > 0 && (
+              <button
+                onClick={() => setShowCampaignSetup(true)}
+                style={{ width: "100%", marginBottom: "8px", padding: "9px", background: ACCENT, border: "none", borderRadius: "6px", color: ACCENT_TEXT, fontFamily: "inherit", fontSize: "11px", fontWeight: 700, cursor: "pointer", boxShadow: `0 4px 12px ${ACCENT}33` }}
+              >
+                📋 Start Campaign ({selectedIds.size})
+              </button>
+            )}
 
             {filteredClients.length === 0 && (
               <div style={{ textAlign: "center", color: MUTED, fontSize: "11px", padding: "24px 0" }}>
@@ -1006,6 +1074,14 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
               >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <div style={{ fontSize: "13px", fontWeight: "600", color: TEXT, display: "flex", alignItems: "center", gap: "6px", flex: 1, minWidth: 0 }}>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(c.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => toggleSelect(c.id)}
+                      style={{ flexShrink: 0, cursor: "pointer" }}
+                      title="Select for bulk campaign"
+                    />
                     <span style={{ display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", flexShrink: 0, background: statusColor(c.status) }} />
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</span>
                   </div>
@@ -1311,6 +1387,7 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

@@ -27,6 +27,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as store from "./store.js";
+import * as campaigns from "./campaigns.js";
+import * as scheduler from "./scheduler.js";
 import { setupAuth, requireAuth } from "./auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -192,7 +194,7 @@ function buildInstructions({ name, contact, industry, businessInfo, scriptText, 
 // ── post-call analysis with a cheap model ───────────────────────────────────
 async function analyzeTranscript(transcript, apiKey) {
   const key = apiKey || OPENAI_API_KEY;
-  const fallback = { isLead: false, interestLevel: "none", meetingRequested: false, meetingTime: "", summary: "" };
+  const fallback = { isLead: false, interestLevel: "none", meetingRequested: false, meetingTime: "", summary: "", doNotCall: false };
   if (!transcript.trim() || !key) return fallback;
   // Hard 25-second cap so a slow/unavailable API never hangs the result
   // indefinitely — the frontend spins until result is set, so a hung
@@ -212,7 +214,8 @@ async function analyzeTranscript(transcript, apiKey) {
             "You extract the outcome of a sales cold-call transcript. Be STRICT and skeptical: phone transcripts often contain mis-heard silence or noise on the prospect's side (stray 'thank you', 'bye', 'hello', 'you', or repeated/garbled words) that is NOT a real reply. " +
             "Only set isLead=true or meetingRequested=true when the PROSPECT, in their own words, clearly and explicitly expressed interest or agreed to a specific meeting. Do NOT infer agreement from the agent's words, from filler, or from ambiguous/garbled text. " +
             "If the prospect gave no clear, substantive replies (silence, one-word fragments, or noise), set everything to false/none and say so in the summary. Never output a meetingTime the prospect did not clearly accept. " +
-            "Reply ONLY with JSON: {\"isLead\":bool, \"interestLevel\":\"high|medium|low|none\", \"meetingRequested\":bool, \"meetingTime\":string, \"summary\":string}." },
+            "Set doNotCall=true ONLY if the prospect explicitly asked not to be called/contacted again (e.g. 'don't call me', 'remove me', 'stop calling'); otherwise false. " +
+            "Reply ONLY with JSON: {\"isLead\":bool, \"interestLevel\":\"high|medium|low|none\", \"meetingRequested\":bool, \"meetingTime\":string, \"summary\":string, \"doNotCall\":bool}." },
           { role: "user", content: transcript.slice(0, 12000) },
         ],
       }),
@@ -289,6 +292,14 @@ function hasGenuineProspectSpeech(transcript) {
   });
 }
 
+// Notify the bulk-calling scheduler once a campaign-linked call has a final
+// result, so it can classify the outcome and schedule any retry. Wrapped so a
+// scheduler hiccup can never break call finalization.
+function notifyCampaign(call) {
+  if (!call?.campaignAttemptId) return;
+  Promise.resolve(scheduler.onCallFinalized(call)).catch((e) => console.error("⚠ campaign notify failed:", e?.message || e));
+}
+
 // Mark a call finished, run analysis (or a canned outcome), and persist.
 // Idempotent: safe to call from the websocket, the status callback, or a timer.
 function finalizeCall(call, reason) {
@@ -302,6 +313,7 @@ function finalizeCall(call, reason) {
       .then((analysis) => {
         call.result = { ...analysis, transcript: text, endedReason: reason || "" };
         saveCalls();
+        notifyCampaign(call);
       })
       // A rejection here used to be unhandled and could take the whole server
       // down (Node >=22 exits on unhandled rejections). Never let analysis crash the process.
@@ -309,6 +321,7 @@ function finalizeCall(call, reason) {
         console.error("analyzeTranscript failed:", err?.message || err);
         call.result = { ...cannedOutcome(reason), transcript: text, endedReason: reason || "" };
         saveCalls();
+        notifyCampaign(call);
       });
   } else if (text.trim()) {
     // There IS transcript text, but the prospect never genuinely spoke — almost
@@ -322,10 +335,12 @@ function finalizeCall(call, reason) {
       transcript: text, endedReason: reason || "",
     };
     saveCalls();
+    notifyCampaign(call);
   } else {
     const base = cannedOutcome(reason);
     if (call.lastError) base.summary = `AI error: ${call.lastError}`;
     call.result = { ...base, transcript: "", endedReason: call.lastError || reason || "" };
+    notifyCampaign(call);
   }
   saveCalls();
 }
@@ -397,15 +412,21 @@ app.post("/api/generate-script", requireAuth, async (req, res) => {
   }
 });
 
-// Start an outbound AI call via Twilio.
-app.post("/api/ai-call", requireAuth, async (req, res) => {
+// Place ONE outbound AI call via Twilio. Shared by the single-call HTTP route
+// AND the bulk-calling scheduler, so both go through identical credential
+// resolution, call-record creation, and the max-duration safety net. Resolves
+// credentials (request/campaign first, then server env). Returns { callId } on
+// success; throws an Error carrying `.status` (and `.details` for Twilio) so the
+// HTTP route can map it to a response and the scheduler can treat it as a failed
+// attempt. `campaignAttemptId`, when present, ties the call back to a campaign.
+async function placeCall(params) {
   const {
     clientId, name, contact, phone, industry, businessInfo, scriptText,
     openaiKey, twilioSid, twilioToken, twilioFrom, targetLang, aiInstructions,
-    voice, accent,
-  } = req.body || {};
+    voice, accent, campaignAttemptId,
+  } = params || {};
 
-  // Resolve credentials: request (UI) first, then server env.
+  // Resolve credentials: request (UI) / campaign first, then server env.
   const oaKey = openaiKey || OPENAI_API_KEY;
   const twSid = twilioSid || TWILIO_ACCOUNT_SID;
   const twToken = twilioToken || TWILIO_AUTH_TOKEN;
@@ -417,17 +438,22 @@ app.post("/api/ai-call", requireAuth, async (req, res) => {
   if (!twFrom) missing.push("Twilio From number");
   if (!PUBLIC_URL) missing.push("PUBLIC_URL (set on the backend server)");
   if (missing.length) {
-    return res.status(500).json({ error: `Missing: ${missing.join(", ")}. Add your keys in Settings; PUBLIC_URL is configured on the backend.` });
+    const e = new Error(`Missing: ${missing.join(", ")}. Add your keys in Settings; PUBLIC_URL is configured on the backend.`);
+    e.status = 500;
+    throw e;
   }
 
   const number = String(phone || "").replace(/[^+\d]/g, "");
   if (!number || number.length < 8 || !number.startsWith("+")) {
-    return res.status(400).json({ error: "Invalid phone number — use full international format, e.g. +14155550142." });
+    const e = new Error("Invalid phone number — use full international format, e.g. +14155550142.");
+    e.status = 400;
+    throw e;
   }
 
   const callId = crypto.randomUUID();
   calls[callId] = {
     callId, clientId, name, phone,
+    campaignAttemptId: campaignAttemptId || null,   // ties a call back to a campaign attempt
     status: "in-progress", twilioStatus: "queued", startedAt: new Date().toISOString(),
     openaiKey: oaKey,                       // in-memory only (never persisted/exposed)
     acct: { sid: twSid, token: twToken },   // in-memory only
@@ -453,7 +479,7 @@ app.post("/api/ai-call", requireAuth, async (req, res) => {
       StatusCallback: statusUrl,
       StatusCallbackMethod: "POST",
     });
-    ["initiated", "ringing", "answered", "completed"].forEach((e) => body.append("StatusCallbackEvent", e));
+    ["initiated", "ringing", "answered", "completed"].forEach((ev) => body.append("StatusCallbackEvent", ev));
 
     const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twSid}/Calls.json`, {
       method: "POST",
@@ -468,7 +494,10 @@ app.post("/api/ai-call", requireAuth, async (req, res) => {
       calls[callId].status = "completed";
       calls[callId].result = { ...cannedOutcome("twilio-failed"), transcript: "", endedReason: data?.message || "twilio-rejected" };
       saveCalls();
-      return res.status(r.status).json({ error: data?.message || "Twilio rejected the call", details: data });
+      const e = new Error(data?.message || "Twilio rejected the call");
+      e.status = r.status;
+      e.details = data;
+      throw e;
     }
     calls[callId].twilioSid = data.sid;
     saveCalls();
@@ -483,12 +512,25 @@ app.post("/api/ai-call", requireAuth, async (req, res) => {
       }
     }, CALL_MAX_SECONDS * 1000).unref?.();
 
-    res.json({ callId, status: "in-progress" });
+    return { callId };
   } catch (err) {
+    if (err.status) throw err; // already-shaped (e.g. Twilio-rejected) — propagate as-is
     calls[callId].status = "completed";
     calls[callId].result = { ...cannedOutcome("twilio-failed"), transcript: "", endedReason: err.message };
     saveCalls();
-    res.status(502).json({ error: `Could not reach Twilio: ${err.message}` });
+    const e = new Error(`Could not reach Twilio: ${err.message}`);
+    e.status = 502;
+    throw e;
+  }
+}
+
+// Start an outbound AI call via Twilio (single-call button).
+app.post("/api/ai-call", requireAuth, async (req, res) => {
+  try {
+    const { callId } = await placeCall(req.body || {});
+    res.json({ callId, status: "in-progress" });
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message, ...(err.details ? { details: err.details } : {}) });
   }
 });
 
@@ -514,6 +556,194 @@ app.get("/api/ai-call/:callId", requireAuth, (req, res) => {
   const { instructions, openaiKey, acct, ...safe } = call;
   res.json(safe);
 });
+
+// ── bulk calling: campaigns ─────────────────────────────────────────────────
+// A campaign dials a whole list of numbers on a schedule: only inside the
+// allowed office-hours window(s) for each number's country, retrying missed /
+// declined numbers after a delay, and rolling overflow to the next open window.
+// The heavy lifting (the loop, the office-hours math, retry/disposition logic)
+// lives in scheduler.js; these routes just create and steer campaigns.
+
+// Common calling codes → country (for display only; window matching uses the
+// per-country override prefixes directly, so this list need not be exhaustive).
+const CALLING_CODES = {
+  "1": "US/CA", "7": "RU/KZ", "20": "EG", "27": "ZA", "30": "GR", "31": "NL",
+  "33": "FR", "34": "ES", "39": "IT", "44": "GB", "49": "DE", "52": "MX",
+  "55": "BR", "60": "MY", "61": "AU", "62": "ID", "63": "PH", "64": "NZ",
+  "65": "SG", "66": "TH", "81": "JP", "82": "KR", "84": "VN", "86": "CN",
+  "90": "TR", "91": "IN", "92": "PK", "94": "LK", "95": "MM", "971": "AE",
+  "966": "SA", "974": "QA", "973": "BH", "968": "OM", "965": "KW", "880": "BD",
+  "977": "NP", "234": "NG", "254": "KE", "212": "MA", "351": "PT", "353": "IE",
+};
+const CODE_KEYS = Object.keys(CALLING_CODES).sort((a, b) => b.length - a.length);
+function detectCallingCode(phoneDigits) {
+  const d = String(phoneDigits || "").replace(/[^\d]/g, "");
+  for (const code of CODE_KEYS) if (d.startsWith(code)) return code;
+  return "";
+}
+
+const HM_RE = /^\d{1,2}:\d{2}$/;
+const hmToMin = (s) => { const [a, b] = String(s).split(":").map(Number); return a * 60 + b; };
+function sanitizeWindows(arr) {
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .filter((w) => w && HM_RE.test(w.start) && HM_RE.test(w.end))
+    .map((w) => ({ start: w.start, end: w.end }))
+    .filter((w) => hmToMin(w.end) > hmToMin(w.start));
+}
+function isValidTz(tz) {
+  try { new Intl.DateTimeFormat("en-US", { timeZone: String(tz) }); return true; } catch { return false; }
+}
+function sanitizeOverrides(obj) {
+  const out = {};
+  if (!obj || typeof obj !== "object") return out;
+  for (const [code, ov] of Object.entries(obj)) {
+    const key = String(code).replace(/[^\d]/g, "");
+    if (!key || !ov || !isValidTz(ov.tz)) continue;
+    const windows = sanitizeWindows(ov.windows);
+    out[key] = {
+      tz: ov.tz,
+      ...(windows.length ? { windows } : {}),
+      ...(Array.isArray(ov.days) && ov.days.length === 7 ? { days: ov.days.map(Boolean) } : {}),
+    };
+  }
+  return out;
+}
+function clampNum(v, def, min, max) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
+function campaignCounts(attempts) {
+  const c = { total: attempts.length, queued: 0, calling: 0, done: 0, attended: 0, missed: 0, declined: 0, doNotCall: 0, invalid: 0 };
+  for (const a of attempts) {
+    if (a.status === "queued") c.queued++;
+    else if (a.status === "calling") c.calling++;
+    if (a.status === "done" || a.status === "canceled") c.done++;
+    if (a.disposition === "attended") c.attended++;
+    else if (a.disposition === "missed") c.missed++;
+    else if (a.disposition === "declined") c.declined++;
+    else if (a.disposition === "do-not-call") c.doNotCall++;
+    else if (a.disposition === "invalid") c.invalid++;
+  }
+  return c;
+}
+
+app.post("/api/campaigns", requireAuth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const clients = Array.isArray(b.clients) ? b.clients : [];
+    if (!clients.length) return res.status(400).json({ error: "Add at least one number to start a campaign." });
+    if (!isValidTz(b.defaultTz)) return res.status(400).json({ error: "Pick a valid default country/timezone." });
+    const defaultWindows = sanitizeWindows(b.defaultWindows);
+    if (!defaultWindows.length) return res.status(400).json({ error: "Add at least one calling time window (e.g. 10:00–18:00)." });
+
+    const campaign = await campaigns.createCampaign({
+      userId: req.user.id,
+      name: (b.name && String(b.name).trim()) || `Campaign · ${new Date().toLocaleDateString()}`,
+      status: "running",
+      defaultTz: b.defaultTz,
+      defaultWindows,
+      days: Array.isArray(b.days) && b.days.length === 7 ? b.days.map(Boolean) : null,
+      countryOverrides: sanitizeOverrides(b.countryOverrides),
+      retryDelayMinutes: clampNum(b.retryDelayMinutes, 120, 1, 100000),
+      maxAttempts: clampNum(b.maxAttempts, 3, 1, 10),
+      concurrency: clampNum(b.concurrency, 1, 1, 10),
+      callConfig: {
+        businessInfo: b.businessInfo || "",
+        scriptText: b.scriptText || "",
+        targetLang: b.targetLang || "English",
+        aiInstructions: b.aiInstructions || "",
+        voice: b.voice || "",
+        accent: b.accent || "",
+      },
+    });
+
+    // Call credentials are kept in memory only (never persisted) — same posture
+    // as single calls. After a restart the campaign falls back to server-env keys.
+    campaigns.setSecrets(campaign.id, {
+      openaiKey: b.openaiKey || "",
+      twilioSid: b.twilioSid || "",
+      twilioToken: b.twilioToken || "",
+      twilioFrom: b.twilioFrom || "",
+    });
+
+    const now = new Date();
+    const rows = clients.map((c) => {
+      const digits = String(c.phone || "").replace(/[^+\d]/g, "");
+      const valid = digits.length >= 8 && digits.startsWith("+");
+      const base = {
+        campaignId: campaign.id,
+        clientId: c.id ?? null,
+        name: c.name || "",
+        contact: c.contact || "",
+        phone: c.phone || "",
+        industry: c.industry || "",
+        countryCode: detectCallingCode(digits),
+        maxAttempts: campaign.maxAttempts,
+      };
+      if (!valid) {
+        return { ...base, status: "done", disposition: "invalid", nextRunAt: now.toISOString(), lastSummary: "Skipped — not a valid international (E.164) number." };
+      }
+      return { ...base, status: "queued", nextRunAt: scheduler.nextAllowed(campaign, { phone: c.phone }, now).toISOString() };
+    });
+    const attempts = await campaigns.createAttempts(rows);
+    res.json({ campaign, attempts, counts: campaignCounts(attempts) });
+  } catch (err) {
+    console.error("create campaign error:", err?.stack || err);
+    res.status(500).json({ error: "Could not create campaign. Please try again." });
+  }
+});
+
+app.get("/api/campaigns", requireAuth, async (req, res) => {
+  try {
+    const list = await campaigns.listCampaigns(req.user.id);
+    const out = [];
+    for (const c of list) {
+      const attempts = await campaigns.listAttempts(c.id);
+      out.push({
+        id: c.id, name: c.name, status: c.status, createdAt: c.createdAt,
+        defaultTz: c.defaultTz, defaultWindows: c.defaultWindows,
+        retryDelayMinutes: c.retryDelayMinutes, maxAttempts: c.maxAttempts, concurrency: c.concurrency,
+        pausedReason: c.pausedReason || "",
+        counts: campaignCounts(attempts),
+      });
+    }
+    res.json({ campaigns: out });
+  } catch (err) {
+    console.error("list campaigns error:", err?.message || err);
+    res.status(500).json({ error: "Could not load campaigns." });
+  }
+});
+
+app.get("/api/campaigns/:id", requireAuth, async (req, res) => {
+  try {
+    const c = await campaigns.getCampaign(req.params.id);
+    if (!c || c.userId !== req.user.id) return res.status(404).json({ error: "Campaign not found." });
+    const attempts = await campaigns.listAttempts(c.id);
+    res.json({ campaign: c, attempts, counts: campaignCounts(attempts) });
+  } catch (err) {
+    console.error("get campaign error:", err?.message || err);
+    res.status(500).json({ error: "Could not load campaign." });
+  }
+});
+
+async function setCampaignStatus(req, res, status) {
+  try {
+    const c = await campaigns.getCampaign(req.params.id);
+    if (!c || c.userId !== req.user.id) return res.status(404).json({ error: "Campaign not found." });
+    if (status === "canceled") await campaigns.cancelAttempts(c.id);
+    // Clearing pausedReason on resume keeps the dashboard honest.
+    const updated = await campaigns.updateCampaign(c.id, { status, ...(status === "running" ? { pausedReason: "" } : {}) });
+    res.json({ campaign: updated });
+  } catch (err) {
+    console.error("set campaign status error:", err?.message || err);
+    if (!res.headersSent) res.status(500).json({ error: "Could not update the campaign." });
+  }
+}
+app.post("/api/campaigns/:id/pause", requireAuth, (req, res) => setCampaignStatus(req, res, "paused"));
+app.post("/api/campaigns/:id/resume", requireAuth, (req, res) => setCampaignStatus(req, res, "running"));
+app.post("/api/campaigns/:id/cancel", requireAuth, (req, res) => setCampaignStatus(req, res, "canceled"));
 
 // ── websocket bridge: Twilio media stream  <->  OpenAI Realtime ─────────────
 const server = http.createServer(app);
@@ -837,6 +1067,16 @@ store.init().catch((err) => {
   console.error("✗ User store failed to initialize:", err.message);
   console.error("   Auth/login will not work. Check DATABASE_URL, or unset it to use the file store.");
 });
+
+// Initialize the campaign store, then start the bulk-calling scheduler. The
+// scheduler dials campaign numbers on their office-hours schedule even when no
+// browser is open. It uses placeCall() directly (no HTTP round-trip).
+campaigns.init()
+  .then(() => scheduler.start({ store: campaigns, placeCall }))
+  .catch((err) => {
+    console.error("✗ Campaign store failed to initialize:", err.message);
+    console.error("   Bulk calling will not work. Check DATABASE_URL, or unset it to use the file store.");
+  });
 
 server.listen(PORT, () => {
   console.log(`CallForge AI-call backend (Twilio + OpenAI) on http://localhost:${PORT}`);
