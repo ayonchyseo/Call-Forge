@@ -22,7 +22,14 @@ const USERS_FILE = path.join(__dirname, "data", "users.json");
 const DATABASE_URL = process.env.DATABASE_URL || "";
 
 let pool = null;          // pg pool when in Postgres mode
-let mode = "file";        // 'pg' | 'file'
+// Decide the backend up front from DATABASE_URL — NOT after init() finishes.
+// If this started as 'file' and only flipped to 'pg' once init() completed, any
+// login that raced in before (or after a failed) Postgres init would silently
+// read an EMPTY local JSON file and answer "Wrong email or password" for
+// perfectly valid credentials. With the mode fixed here, a pre-init/failed-init
+// query throws instead, which auth.js surfaces as a truthful 503 "temporarily
+// unavailable".
+let mode = DATABASE_URL ? "pg" : "file";  // 'pg' | 'file'
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 const newId = () => crypto.randomUUID();
@@ -51,7 +58,7 @@ function writeFileUsers(users) {
 
 // ── init ────────────────────────────────────────────────────────────────────
 export async function init() {
-  if (DATABASE_URL) {
+  if (mode === "pg") {
     const { default: pg } = await import("pg");
     pool = new pg.Pool({
       connectionString: DATABASE_URL,
@@ -68,10 +75,8 @@ export async function init() {
         created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
       )
     `);
-    mode = "pg";
     console.log("ℹ  User store: Postgres (durable).");
   } else {
-    mode = "file";
     if (!fs.existsSync(USERS_FILE)) writeFileUsers([]);
     console.log("⚠  User store: local JSON file. Accounts/approvals are NOT durable on hosts");
     console.log("   like Render (wiped on redeploy). Set DATABASE_URL to a Postgres URL for production.");
@@ -79,11 +84,18 @@ export async function init() {
   await ensureAdmin();
 }
 
+// Postgres pool accessor — loud, clear failure instead of a null deref when a
+// query races in before init() has connected (or after it failed).
+function db() {
+  if (!pool) throw new Error("Postgres is not connected yet (DATABASE_URL is set but init hasn't completed).");
+  return pool;
+}
+
 // ── reads ───────────────────────────────────────────────────────────────────
 export async function getUserByEmail(email) {
   const e = normEmail(email);
   if (mode === "pg") {
-    const { rows } = await pool.query("SELECT * FROM users WHERE email = $1", [e]);
+    const { rows } = await db().query("SELECT * FROM users WHERE email = $1", [e]);
     return rowToUser(rows[0]);
   }
   return readFileUsers().find((u) => u.email === e) || null;
@@ -91,7 +103,7 @@ export async function getUserByEmail(email) {
 
 export async function getUserById(id) {
   if (mode === "pg") {
-    const { rows } = await pool.query("SELECT * FROM users WHERE id = $1", [id]);
+    const { rows } = await db().query("SELECT * FROM users WHERE id = $1", [id]);
     return rowToUser(rows[0]);
   }
   return readFileUsers().find((u) => u.id === id) || null;
@@ -99,7 +111,7 @@ export async function getUserById(id) {
 
 export async function listUsers() {
   if (mode === "pg") {
-    const { rows } = await pool.query("SELECT * FROM users ORDER BY created_at DESC");
+    const { rows } = await db().query("SELECT * FROM users ORDER BY created_at DESC");
     return rows.map(rowToUser);
   }
   return readFileUsers().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
@@ -116,7 +128,7 @@ export async function createUser({ email, passwordHash, role = "client", status 
     createdAt: new Date().toISOString(),
   };
   if (mode === "pg") {
-    await pool.query(
+    await db().query(
       "INSERT INTO users (id, email, password_hash, role, status, created_at) VALUES ($1,$2,$3,$4,$5,$6)",
       [user.id, user.email, user.passwordHash, user.role, user.status, user.createdAt],
     );
@@ -130,7 +142,7 @@ export async function createUser({ email, passwordHash, role = "client", status 
 
 export async function setUserStatus(id, status) {
   if (mode === "pg") {
-    const { rows } = await pool.query("UPDATE users SET status = $1 WHERE id = $2 RETURNING *", [status, id]);
+    const { rows } = await db().query("UPDATE users SET status = $1 WHERE id = $2 RETURNING *", [status, id]);
     return rowToUser(rows[0]);
   }
   const users = readFileUsers();
@@ -143,7 +155,7 @@ export async function setUserStatus(id, status) {
 
 export async function setUserRole(id, role) {
   if (mode === "pg") {
-    const { rows } = await pool.query("UPDATE users SET role = $1 WHERE id = $2 RETURNING *", [role, id]);
+    const { rows } = await db().query("UPDATE users SET role = $1 WHERE id = $2 RETURNING *", [role, id]);
     return rowToUser(rows[0]);
   }
   const users = readFileUsers();
@@ -154,9 +166,22 @@ export async function setUserRole(id, role) {
   return u;
 }
 
+export async function setUserPassword(id, passwordHash) {
+  if (mode === "pg") {
+    const { rows } = await db().query("UPDATE users SET password_hash = $1 WHERE id = $2 RETURNING *", [passwordHash, id]);
+    return rowToUser(rows[0]);
+  }
+  const users = readFileUsers();
+  const u = users.find((x) => x.id === id);
+  if (!u) return null;
+  u.passwordHash = passwordHash;
+  writeFileUsers(users);
+  return u;
+}
+
 export async function deleteUser(id) {
   if (mode === "pg") {
-    await pool.query("DELETE FROM users WHERE id = $1", [id]);
+    await db().query("DELETE FROM users WHERE id = $1", [id]);
     return;
   }
   writeFileUsers(readFileUsers().filter((u) => u.id !== id));
@@ -164,7 +189,7 @@ export async function deleteUser(id) {
 
 export async function countAdmins() {
   if (mode === "pg") {
-    const { rows } = await pool.query("SELECT COUNT(*)::int AS n FROM users WHERE role = 'admin'");
+    const { rows } = await db().query("SELECT COUNT(*)::int AS n FROM users WHERE role = 'admin'");
     return rows[0].n;
   }
   return readFileUsers().filter((u) => u.role === "admin").length;
@@ -184,6 +209,16 @@ async function ensureAdmin() {
     if (existing.role !== "admin" || existing.status !== "approved") {
       await setUserRole(existing.id, "admin");
       await setUserStatus(existing.id, "approved");
+    }
+    // ADMIN_PASSWORD is authoritative: if the operator set (or changed) it and
+    // it no longer matches the stored hash, sync the hash. Without this, the
+    // admin account keeps its ORIGINAL password forever — anyone who changed
+    // ADMIN_PASSWORD after first boot (or set it after starting on the default)
+    // was locked out with "Wrong email or password" despite using the exact
+    // credentials from their env config.
+    if (process.env.ADMIN_PASSWORD && !(await bcrypt.compare(password, existing.passwordHash))) {
+      await setUserPassword(existing.id, await bcrypt.hash(password, 10));
+      console.log(`ℹ  Admin password updated from ADMIN_PASSWORD for ${email}.`);
     }
     return;
   }
