@@ -344,6 +344,45 @@ function aiStatusLabel(s) {
   return map[s] || (s || "Starting…");
 }
 
+// ── Follow-up reminders ───────────────────────────────────────────────────────
+// A reminder is stored on the client as `reminderAt` (ISO string). These helpers
+// classify and label it so the same rules drive the list badges, the header
+// "due" chip, and the due-today filter.
+function sameCalendarDay(a, b) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+// null → no reminder · "overdue" → time has passed · "today" → later today · "upcoming" → a future day
+function reminderState(reminderAt) {
+  if (!reminderAt) return null;
+  const d = new Date(reminderAt);
+  if (isNaN(d.getTime())) return null;
+  if (d.getTime() <= Date.now()) return "overdue";
+  return sameCalendarDay(d, new Date()) ? "today" : "upcoming";
+}
+
+function reminderColor(state) {
+  return state === "overdue" ? DANGER : state === "today" ? WARN : state === "upcoming" ? INFO : MUTED;
+}
+
+// Compact, human-friendly label: "Today 3:00 PM", "Tomorrow 9:00 AM", "Jul 25, 9:00 AM".
+function reminderLabel(reminderAt) {
+  const d = new Date(reminderAt);
+  if (isNaN(d.getTime())) return "";
+  const now = new Date();
+  const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  if (sameCalendarDay(d, now)) return `Today ${time}`;
+  if (sameCalendarDay(d, tomorrow)) return `Tomorrow ${time}`;
+  return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}, ${time}`;
+}
+
+// Format a Date for an <input type="datetime-local"> value (local time, no seconds).
+function toLocalInputValue(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 // ── Toast component ───────────────────────────────────────────────────────────
 function ToastList({ toasts }) {
   if (!toasts.length) return null;
@@ -499,6 +538,7 @@ function HelpModal({ onClose }) {
       <div style={li}>• <b>📞 Call Now</b> → dials from your phone (tap-to-dial), you read the script.</div>
       <div style={li}>• <b>🤖 AI Call</b> → the AI agent dials and talks (needs the backend, below).</div>
       <div style={li}>• <b>📋 Start Campaign</b> → tick several clients, then bulk-call them on a schedule (office hours, auto-retries, live Attended/Missed/Declined dashboard). Open <b>📋 Campaigns</b> up top to track them.</div>
+      <div style={li}>• <b>⏰ Follow-up Reminder</b> → schedule a callback time on any lead. Due reminders show a <b>⏰ due</b> badge up top — click it to see just what needs calling back today.</div>
 
       <div style={h}>5 · Live AI calls need the call server</div>
       <div style={p}>A real phone call runs through the CallForge server (Twilio streams the call audio to it) — the same server this app already talks to. Just add your <b>Twilio keys</b> in ⚙ Settings, and make sure the server has <code>PUBLIC_URL</code> set to its public https URL. See the README for steps.</div>
@@ -536,10 +576,16 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
   const [showCampaignSetup, setShowCampaignSetup] = useState(false);
   const [showCampaigns, setShowCampaigns] = useState(false);
   const [openCampaignId, setOpenCampaignId] = useState(null);
+  // Follow-up reminders: filter the list to just what's due, and draft a callback time.
+  const [reminderFilter, setReminderFilter] = useState(false);
+  const [reminderDraft, setReminderDraft] = useState("");
   const fileRef = useRef();
   const timerRef = useRef();
   const aiPollRef = useRef();
   const aiPollCountRef = useRef(0);
+  // Tracks which reminders we've already surfaced (per client+time) so a due
+  // callback toasts once, not on every tick.
+  const notifiedRef = useRef(new Set());
 
   const selectedClient = clients.find((c) => c.id === selected);
 
@@ -576,9 +622,37 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
     setAiStatus("");
     setAiTranscript([]);
     clearInterval(aiPollRef.current);
+    const c = clients.find((cl) => cl.id === selected);
+    setReminderDraft(c?.reminderAt ? toLocalInputValue(new Date(c.reminderAt)) : "");
   }, [selected]);
 
   useEffect(() => () => clearInterval(aiPollRef.current), []);
+
+  // Surface reminders the moment they come due, even while the app sits open.
+  // Fires a toast (and an OS notification if the user granted permission) once
+  // per reminder, then re-checks every 30s.
+  useEffect(() => {
+    const check = () => {
+      const now = Date.now();
+      for (const c of clients) {
+        if (!c.reminderAt) continue;
+        const t = new Date(c.reminderAt).getTime();
+        const key = `${c.id}:${c.reminderAt}`;
+        if (!isNaN(t) && t <= now && !notifiedRef.current.has(key)) {
+          notifiedRef.current.add(key);
+          toast(`⏰ Follow-up due: ${c.name}`, "warn");
+          try {
+            if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+              new Notification("CallForge — follow-up due", { body: `${c.name} · ${c.phone}` });
+            }
+          } catch { /* notifications unavailable — the toast still fires */ }
+        }
+      }
+    };
+    check();
+    const id = setInterval(check, 30000);
+    return () => clearInterval(id);
+  }, [clients]);
 
   function toast(msg, type = "success") {
     const id = Date.now() + Math.random();
@@ -785,6 +859,36 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
     toast(`Marked as ${statusLabel(status)}`);
   }
 
+  // ── Follow-up reminders ───────────────────────────────────────────────────
+  function saveReminder(localValue) {
+    if (!selected || !localValue) return;
+    const d = new Date(localValue);
+    if (isNaN(d.getTime())) { toast("Pick a valid date & time", "warn"); return; }
+    const iso = d.toISOString();
+    setClients((prev) => prev.map((c) => (c.id === selected ? { ...c, reminderAt: iso } : c)));
+    setReminderDraft(toLocalInputValue(d));
+    // Ask for OS-notification permission the first time a reminder is set.
+    try {
+      if (typeof Notification !== "undefined" && Notification.permission === "default") Notification.requestPermission();
+    } catch { /* not supported — in-app toasts still work */ }
+    toast(`Reminder set for ${reminderLabel(iso)}`);
+  }
+
+  // Quick presets: a callback `days` from now at 9:00 AM local time.
+  function quickReminder(days) {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    d.setHours(9, 0, 0, 0);
+    saveReminder(toLocalInputValue(d));
+  }
+
+  function clearReminder() {
+    if (!selected) return;
+    setClients((prev) => prev.map((c) => (c.id === selected ? { ...c, reminderAt: null } : c)));
+    setReminderDraft("");
+    toast("Reminder cleared");
+  }
+
   function addClient() {
     if (!newClient.name.trim()) { toast("Client name is required", "error"); return; }
     const client = {
@@ -835,7 +939,7 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
   const selectedClients = clients.filter((c) => selectedIds.has(c.id));
 
   function exportCSV() {
-    const headers = ["Name", "Contact", "Phone", "Industry", "Status", "Notes"];
+    const headers = ["Name", "Contact", "Phone", "Industry", "Status", "Follow-up", "Notes"];
     const rows = clients.map((c) =>
       [
         `"${(c.name || "").replace(/"/g, '""')}"`,
@@ -843,6 +947,7 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
         `"${(c.phone || "").replace(/"/g, '""')}"`,
         `"${(c.industry || "").replace(/"/g, '""')}"`,
         `"${c.status}"`,
+        `"${c.reminderAt ? new Date(c.reminderAt).toLocaleString("en-US") : ""}"`,
         `"${(c.notes || "").replace(/"/g, '""').replace(/\n/g, " | ")}"`,
       ].join(",")
     );
@@ -857,13 +962,24 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
     toast("Data exported");
   }
 
-  const filteredClients = clients.filter(
-    (c) =>
-      !search ||
-      c.name?.toLowerCase().includes(search.toLowerCase()) ||
-      c.contact?.toLowerCase().includes(search.toLowerCase()) ||
-      c.industry?.toLowerCase().includes(search.toLowerCase())
-  );
+  // Clients with a reminder that's due now or later today — drives the header
+  // "due" chip and the due-today filter.
+  const dueReminders = clients.filter((c) => {
+    const s = reminderState(c.reminderAt);
+    return s === "overdue" || s === "today";
+  });
+
+  const filteredClients = clients
+    .filter(
+      (c) =>
+        !search ||
+        c.name?.toLowerCase().includes(search.toLowerCase()) ||
+        c.contact?.toLowerCase().includes(search.toLowerCase()) ||
+        c.industry?.toLowerCase().includes(search.toLowerCase())
+    )
+    .filter((c) => !reminderFilter || ["overdue", "today"].includes(reminderState(c.reminderAt)))
+    // When showing the due queue, order by soonest callback first.
+    .sort((a, b) => (reminderFilter ? new Date(a.reminderAt || 0) - new Date(b.reminderAt || 0) : 0));
 
   const stats = {
     total: clients.length,
@@ -916,11 +1032,20 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
       {/* ── Header ── */}
       <div style={{ borderBottom: `1px solid ${BORDER}`, padding: "14px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", background: CARD, boxShadow: SHADOW, position: "relative", zIndex: 5, flexShrink: 0 }}>
         <div style={{ fontSize: "17px", fontWeight: "800", letterSpacing: "-0.01em", color: TEXT }}><span style={{ color: ACCENT }}>⬡</span> CallForge</div>
-        <div style={{ display: "flex", gap: "20px", fontSize: "11px", color: MUTED }}>
+        <div style={{ display: "flex", gap: "20px", fontSize: "11px", color: MUTED, alignItems: "center" }}>
           <span>Total <span style={{ color: TEXT }}>{stats.total}</span></span>
           <span>Leads <span style={{ color: ACCENT }}>{stats.converted}</span></span>
           <span>Follow-up <span style={{ color: WARN }}>{stats.followUp}</span></span>
           <span>Declined <span style={{ color: DANGER }}>{stats.notInterested}</span></span>
+          {dueReminders.length > 0 && (
+            <button
+              onClick={() => setReminderFilter((v) => !v)}
+              title="Follow-ups due now or today — click to show just these"
+              style={{ background: reminderFilter ? `${WARN}22` : `${WARN}14`, border: `1px solid ${WARN}${reminderFilter ? "88" : "44"}`, borderRadius: "20px", color: WARN, padding: "3px 11px", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em" }}
+            >
+              ⏰ {dueReminders.length} due
+            </button>
+          )}
         </div>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <button onClick={() => setShowHelp(true)} title="How to use" style={{ background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "5px", color: MUTED, padding: "5px 11px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>
@@ -1038,8 +1163,13 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
                   onChange={() => toggleSelectAll(filteredClients.map((c) => c.id))}
                   style={{ cursor: "pointer" }}
                 />
-                Clients ({filteredClients.length}{search ? ` of ${clients.length}` : ""})
+                Clients ({filteredClients.length}{(search || reminderFilter) ? ` of ${clients.length}` : ""})
               </label>
+              {reminderFilter && (
+                <button onClick={() => setReminderFilter(false)} title="Show all clients" style={{ fontSize: "10px", color: WARN, background: `${WARN}14`, border: `1px solid ${WARN}44`, borderRadius: "4px", padding: "2px 7px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700 }}>
+                  ⏰ Due only ✕
+                </button>
+              )}
               {selectedIds.size > 0 && <span style={{ fontSize: "10px", color: ACCENT, fontWeight: 700 }}>{selectedIds.size} ✓</span>}
             </div>
             {selectedIds.size > 0 && (
@@ -1053,7 +1183,7 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
 
             {filteredClients.length === 0 && (
               <div style={{ textAlign: "center", color: MUTED, fontSize: "11px", padding: "24px 0" }}>
-                {search ? "No clients match your search" : "No clients yet — upload a CSV or add manually"}
+                {reminderFilter ? "No follow-ups due right now 🎉" : search ? "No clients match your search" : "No clients yet — upload a CSV or add manually"}
               </div>
             )}
 
@@ -1115,6 +1245,14 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
                     </span>
                   )}
                 </div>
+
+                {c.reminderAt && reminderState(c.reminderAt) && (
+                  <div style={{ marginTop: "5px", paddingLeft: "12px" }}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, padding: "1px 7px", borderRadius: "20px", color: reminderColor(reminderState(c.reminderAt)), background: `${reminderColor(reminderState(c.reminderAt))}18`, border: `1px solid ${reminderColor(reminderState(c.reminderAt))}44` }}>
+                      ⏰ {reminderState(c.reminderAt) === "overdue" ? "Due" : "Follow-up"} {reminderLabel(c.reminderAt)}
+                    </span>
+                  </div>
+                )}
 
                 {c.notes && (
                   <div style={{ fontSize: "10px", color: MUTED, marginTop: "4px", paddingLeft: "12px", fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -1324,6 +1462,56 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
                     </div>
                   </div>
                 )}
+
+                {/* Follow-up reminder */}
+                {(() => {
+                  const rState = reminderState(selectedClient.reminderAt);
+                  const rColor = reminderColor(rState);
+                  return (
+                    <div style={{ background: CARD, border: `1px solid ${rState ? `${rColor}55` : BORDER}`, borderRadius: "14px", boxShadow: SHADOW, padding: "18px 20px", marginTop: "4px", marginBottom: "14px" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
+                        <div style={{ fontSize: "10px", letterSpacing: "0.15em", color: MUTED, textTransform: "uppercase" }}>⏰ Follow-up Reminder</div>
+                        {selectedClient.reminderAt && (
+                          <span style={{ fontSize: "11px", fontWeight: 700, color: rColor }}>
+                            {rState === "overdue" ? "Overdue · " : rState === "today" ? "Due today · " : "Scheduled · "}{reminderLabel(selectedClient.reminderAt)}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                        <input
+                          type="datetime-local"
+                          value={reminderDraft}
+                          onChange={(e) => setReminderDraft(e.target.value)}
+                          style={{ background: BG, border: `1px solid ${BORDER}`, borderRadius: "6px", color: TEXT, fontFamily: "inherit", fontSize: "12px", padding: "8px 10px", outline: "none", colorScheme: "light" }}
+                        />
+                        <button
+                          onClick={() => saveReminder(reminderDraft)}
+                          disabled={!reminderDraft}
+                          style={{ padding: "8px 14px", background: `${ACCENT}22`, border: `1px solid ${ACCENT}44`, borderRadius: "6px", color: ACCENT, fontFamily: "inherit", fontSize: "11px", fontWeight: 600, cursor: reminderDraft ? "pointer" : "not-allowed", opacity: reminderDraft ? 1 : 0.5 }}
+                        >
+                          {selectedClient.reminderAt ? "Update" : "Set reminder"}
+                        </button>
+                        {selectedClient.reminderAt && (
+                          <button onClick={clearReminder} style={{ padding: "8px 12px", background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "6px", color: MUTED, fontFamily: "inherit", fontSize: "11px", cursor: "pointer" }}>
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "10px" }}>
+                        <span style={{ fontSize: "10px", color: MUTED, alignSelf: "center", marginRight: "2px" }}>Quick:</span>
+                        {[{ label: "Tomorrow 9am", days: 1 }, { label: "In 2 days", days: 2 }, { label: "Next week", days: 7 }].map(({ label, days }) => (
+                          <button
+                            key={days}
+                            onClick={() => quickReminder(days)}
+                            style={{ padding: "4px 10px", background: "transparent", border: `1px solid ${BORDER}`, borderRadius: "20px", color: MUTED, fontFamily: "inherit", fontSize: "10px", cursor: "pointer" }}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Notes */}
                 {selectedClient.notes && (

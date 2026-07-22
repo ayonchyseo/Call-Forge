@@ -17,6 +17,7 @@ calling to the **US, UK, AU, and NZ**.
 - 🤖 **AI Auto-Calling** — An AI agent dials the number itself, holds the conversation, tries to book a meeting, and logs the outcome (see below)
 - 📋 **Bulk Calling Campaigns** — Select many numbers and let the bot work the whole list on a schedule: timezone-aware **office-hours** windows (with per-country overrides), automatic **retries** for missed/declined numbers, overflow rolled to the next day, and a live dashboard of **Attended / Missed / Declined** outcomes (see below)
 - 📊 **Lead Status & Live Stats** — Track Lead ✓ / Follow-up ↺ / Declined ✗ with at-a-glance conversion counts
+- ⏰ **Follow-up Reminders** — Schedule a callback time on any lead (or use the Tomorrow / In 2 days / Next week quick presets). Due callbacks light up a **⏰ due** badge in the header; click it to filter the list to just what needs calling back today. Reminders that come due pop an in-app toast (and a desktop notification if you allow it).
 - ↓ **Export** — Download all clients, statuses, and notes as CSV
 - ❓ **Built-in Help** — A "How to use" guide is one click away in the header
 
