@@ -14,9 +14,19 @@
 //   5. GET /api/ai-call/:callId   → the frontend polls this for live status,
 //                                    partial transcript, and the final outcome.
 //
+// Manual (human) calling rides on the same Twilio account:
+//   • POST /api/manual-call       → Twilio rings YOUR phone, then dials the
+//                                    prospect and bridges the two legs, with
+//                                    your Twilio number as the caller ID.
+//   • GET  /api/manual-call/:id   → live phase (ringing you → dialing → connected)
+//   • POST /api/manual-call/:id/hangup → end it from the app.
+//   Manual calls need no PUBLIC_URL — the TwiML is inline and status is read
+//   from Twilio's REST API — so they work even on a bare local backend.
+//
 // Keys can come from the UI (per request) OR from server/.env. Per-request keys
 // take priority, so the app can be fully configured from the browser. PUBLIC_URL
-// is the one thing that must be set on the server (it's the backend's own URL).
+// is the one thing that must be set on the server for AI calls (it's the
+// backend's own URL, where Twilio streams the call audio).
 
 import express from "express";
 import cors from "cors";
@@ -249,6 +259,13 @@ function cannedOutcome(reason) {
   };
 }
 
+// Normalize a phone number to E.164-ish form. Returns "" when unusable, so
+// callers can reject it with a clear message instead of handing Twilio junk.
+function normalizeNumber(raw) {
+  const n = String(raw || "").replace(/[^+\d]/g, "");
+  return n.startsWith("+") && n.length >= 8 ? n : "";
+}
+
 // Hang up an in-flight Twilio call (stops charges on stuck/expired calls).
 async function hangupTwilio(call) {
   const sid = call?.acct?.sid, token = call?.acct?.token;
@@ -443,8 +460,8 @@ async function placeCall(params) {
     throw e;
   }
 
-  const number = String(phone || "").replace(/[^+\d]/g, "");
-  if (!number || number.length < 8 || !number.startsWith("+")) {
+  const number = normalizeNumber(phone);
+  if (!number) {
     const e = new Error("Invalid phone number — use full international format, e.g. +14155550142.");
     e.status = 400;
     throw e;
@@ -530,7 +547,10 @@ app.post("/api/ai-call", requireAuth, async (req, res) => {
     const { callId } = await placeCall(req.body || {});
     res.json({ callId, status: "in-progress" });
   } catch (err) {
-    res.status(err.status || 502).json({ error: err.message, ...(err.details ? { details: err.details } : {}) });
+    // A Twilio auth failure must not surface as 401/403: the frontend reads
+    // those as "your session expired" and logs the user out over bad Twilio keys.
+    const code = err.status === 401 || err.status === 403 ? 400 : (err.status || 502);
+    res.status(code).json({ error: err.message, ...(err.details ? { details: err.details } : {}) });
   }
 });
 
@@ -555,6 +575,289 @@ app.get("/api/ai-call/:callId", requireAuth, (req, res) => {
   // Never echo secrets back to the client.
   const { instructions, openaiKey, acct, ...safe } = call;
   res.json(safe);
+});
+
+// ── manual calling: bridge YOUR phone to the prospect via Twilio ─────────────
+// "CALL NOW" used to be a bare `tel:` link. That works on a phone and nowhere
+// else: on a desktop it does nothing useful, it dials from the rep's personal
+// number instead of the company's Twilio number, and CallForge never learns
+// whether the call connected. This bridges the call through Twilio instead —
+// Twilio rings the REP's own phone first and, once they pick up, dials the
+// prospect and connects the two legs with the Twilio number as caller ID.
+//
+// Unlike AI calls this needs NO PUBLIC_URL: the TwiML is passed inline and live
+// status is read straight from Twilio's REST API while the UI polls. When
+// PUBLIC_URL *is* configured we additionally register status callbacks so the
+// UI reacts the instant Twilio reports a change instead of on the next poll.
+const MANUAL_CALL_MAX_SECONDS = envNum("MANUAL_CALL_MAX_SECONDS", 1800, { min: 30 });
+const MANUAL_RING_SECONDS = envNum("MANUAL_RING_SECONDS", 30, { min: 5, max: 120 });
+
+// Manual calls carry no transcript and no AI analysis, so they live in memory
+// only (never written to calls.json) and are pruned once they are old.
+const manualCalls = {};
+const MANUAL_TERMINAL = ["completed", "busy", "no-answer", "failed", "canceled"];
+
+// XML-escape anything interpolated into inline TwiML. A client name comes from
+// a user-uploaded CSV, so an unescaped `&` or `<` would produce invalid TwiML
+// and Twilio would drop the call.
+function escapeXml(s) {
+  return String(s == null ? "" : s).replace(/[<>&"']/g, (c) =>
+    ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;" }[c]));
+}
+
+function twilioAuth(sid, token) {
+  return "Basic " + Buffer.from(`${sid}:${token}`).toString("base64");
+}
+
+function formatSeconds(s) {
+  const n = Math.max(0, Math.round(Number(s) || 0));
+  const m = Math.floor(n / 60);
+  return m ? `${m}m ${n % 60}s` : `${n}s`;
+}
+
+// Drop manual call records once they're finished and stale (they're only needed
+// while the UI is polling them), so a long-running server can't grow unbounded.
+function pruneManualCalls() {
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  for (const [id, c] of Object.entries(manualCalls)) {
+    const ts = Date.parse(c.endedAt || c.startedAt || "") || 0;
+    if (c.status === "completed" && ts && ts < cutoff) delete manualCalls[id];
+  }
+}
+
+// What the UI shows while the call is live. Derived on the server so the
+// frontend doesn't have to reason about two Twilio call legs.
+function manualPhase(c) {
+  if (c.status === "completed") return "ended";
+  if (c.talkSeconds > 0 || c.prospectStatus === "in-progress") return "connected";
+  if (c.twilioStatus === "in-progress") return "dialing-client";
+  if (c.twilioStatus === "ringing") return "ringing-you";
+  return "starting";
+}
+
+function manualSummary(c) {
+  if (c.talkSeconds > 0) return `Connected — talked ${formatSeconds(c.talkSeconds)}.`;
+  switch (c.outcome) {
+    case "busy": return "The client's line was busy.";
+    case "no-answer": return "The client didn't answer.";
+    case "failed": return "The call to the client failed to connect.";
+    case "canceled": return "Call canceled.";
+    case "unanswered-by-you": return "You didn't pick up, so the client was never dialed.";
+    default: return "Call ended without connecting.";
+  }
+}
+
+// Mark a manual call finished. Idempotent: the status callback, the REST poll
+// and the max-duration timer can all race to it.
+function finalizeManualCall(call, reason, parentDuration) {
+  if (!call || call.status !== "in-progress") return;
+  call.status = "completed";
+  call.endedAt = new Date().toISOString();
+  if (reason) call.twilioStatus = reason;
+  if (parentDuration) call.durationSec = Number(parentDuration) || 0;
+  // Twilio may not have published the prospect leg's duration yet (typically
+  // when the rep hangs up from the app). We saw the legs connect, so time it
+  // ourselves rather than reporting a connected call as "no answer".
+  if (!(call.talkSeconds > 0) && call.connectedAt) {
+    call.talkSeconds = Math.max(1, Math.round((Date.now() - call.connectedAt) / 1000));
+  }
+  if (call.talkSeconds > 0) call.outcome = "connected";
+  else if (MANUAL_TERMINAL.includes(call.prospectStatus) && call.prospectStatus !== "completed") call.outcome = call.prospectStatus;
+  else if (!call.reachedYou) call.outcome = "unanswered-by-you";
+  else call.outcome = call.prospectStatus === "completed" ? "connected" : "no-answer";
+  // A prospect leg that completed with no measurable talk time never really
+  // connected — don't report it as a conversation.
+  if (call.outcome === "connected" && !(call.talkSeconds > 0)) call.outcome = "no-answer";
+  call.summary = manualSummary(call);
+  console.log(`[manual ${call.callId}] ended (${call.outcome}); talk=${call.talkSeconds || 0}s`);
+}
+
+// Pull the prospect (child) leg from Twilio: its status is what tells us whether
+// the two parties are actually talking, and its duration is the real talk time.
+async function refreshProspectLeg(call) {
+  const { sid, token } = call.acct || {};
+  if (!sid || !token || !call.twilioSid) return;
+  try {
+    const r = await fetch(
+      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json?ParentCallSid=${encodeURIComponent(call.twilioSid)}&PageSize=1`,
+      { headers: { Authorization: twilioAuth(sid, token) } });
+    if (!r.ok) return;
+    const leg = ((await r.json()).calls || [])[0];
+    if (!leg) return;
+    if (leg.status) call.prospectStatus = leg.status;
+    if (leg.status === "in-progress" && !call.connectedAt) call.connectedAt = Date.now();
+    const dur = Number(leg.duration || 0);
+    if (dur > 0) call.talkSeconds = dur;
+  } catch { /* transient — the next poll retries */ }
+}
+
+// Refresh one live manual call from Twilio's REST API. Rate-limited so a chatty
+// UI (or several open tabs) can't hammer Twilio.
+async function refreshManualCall(call) {
+  if (!call || call.status !== "in-progress" || !call.twilioSid) return;
+  const now = Date.now();
+  if (call.lastPoll && now - call.lastPoll < 1500) return;
+  call.lastPoll = now;
+  const { sid, token } = call.acct || {};
+  if (!sid || !token) return;
+  try {
+    const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls/${call.twilioSid}.json`,
+      { headers: { Authorization: twilioAuth(sid, token) } });
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.status) call.twilioStatus = d.status;
+    if (d.status === "in-progress") call.reachedYou = true;
+    // Only once the rep has answered is there a child leg worth asking about.
+    if (call.reachedYou) await refreshProspectLeg(call);
+    if (MANUAL_TERMINAL.includes(d.status)) finalizeManualCall(call, d.status, d.duration);
+  } catch { /* transient — the next poll retries */ }
+}
+
+// Start a bridged manual call: Twilio rings the rep, then dials the prospect.
+app.post("/api/manual-call", requireAuth, async (req, res) => {
+  pruneManualCalls();
+  const b = req.body || {};
+
+  // Credentials: the UI's Settings first, then the server env (same order as AI calls).
+  const twSid = b.twilioSid || TWILIO_ACCOUNT_SID;
+  const twToken = b.twilioToken || TWILIO_AUTH_TOKEN;
+  const twFrom = normalizeNumber(b.twilioFrom || TWILIO_FROM_NUMBER);
+  if (!twSid || !twToken) return res.status(400).json({ error: "Missing Twilio Account SID + Auth Token — add them in ⚙ Settings." });
+  if (!twFrom) return res.status(400).json({ error: "Missing or invalid Twilio From number — use full international format, e.g. +15551234567." });
+
+  const prospect = normalizeNumber(b.phone);
+  const agent = normalizeNumber(b.agentPhone);
+  if (!prospect) return res.status(400).json({ error: "Invalid client phone number — use full international format, e.g. +14155550142." });
+  if (!agent) return res.status(400).json({ error: "Add your own phone number in ⚙ Settings (full international format, e.g. +14155550142) so we can ring you first." });
+  if (agent === prospect) return res.status(400).json({ error: "Your number and the client's number are identical — that call would just dial you back." });
+
+  const callId = crypto.randomUUID();
+  const announce = b.name ? `Connecting you to ${b.name}` : "Connecting your call";
+  const actionUrl = PUBLIC_URL ? `${PUBLIC_URL}/api/manual-dial-status?callId=${callId}` : "";
+  // The rep hears a short announcement, then Twilio dials the prospect and
+  // bridges the legs. timeLimit caps the conversation so a forgotten call can't
+  // run up charges; timeout is how long the prospect's phone rings.
+  const twiml =
+    `<?xml version="1.0" encoding="UTF-8"?>` +
+    `<Response>` +
+    `<Say>${escapeXml(announce)}</Say>` +
+    `<Dial callerId="${escapeXml(twFrom)}" timeout="${MANUAL_RING_SECONDS}" timeLimit="${MANUAL_CALL_MAX_SECONDS}"` +
+    (actionUrl ? ` action="${escapeXml(actionUrl)}" method="POST"` : "") + `>` +
+    `<Number>${escapeXml(prospect)}</Number>` +
+    `</Dial>` +
+    `</Response>`;
+
+  manualCalls[callId] = {
+    callId,
+    userId: req.user.id,
+    clientId: b.clientId ?? null,
+    name: b.name || "",
+    phone: prospect,
+    agentPhone: agent,
+    status: "in-progress",
+    twilioStatus: "queued",
+    prospectStatus: "",
+    reachedYou: false,
+    connectedAt: null,   // ms timestamp of the moment both parties were on the line
+    talkSeconds: 0,
+    durationSec: 0,
+    startedAt: new Date().toISOString(),
+    endedAt: null,
+    outcome: "",
+    summary: "",
+    acct: { sid: twSid, token: twToken },   // in-memory only (never persisted/exposed)
+  };
+
+  try {
+    const body = new URLSearchParams({
+      To: agent,
+      From: twFrom,
+      Twiml: twiml,
+      Timeout: String(MANUAL_RING_SECONDS),
+    });
+    if (PUBLIC_URL) {
+      body.set("StatusCallback", `${PUBLIC_URL}/api/manual-status?callId=${callId}`);
+      body.set("StatusCallbackMethod", "POST");
+      ["initiated", "ringing", "answered", "completed"].forEach((ev) => body.append("StatusCallbackEvent", ev));
+    }
+
+    const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twSid}/Calls.json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Authorization: twilioAuth(twSid, twToken) },
+      body,
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      delete manualCalls[callId];
+      // NEVER pass a Twilio 401/403 through as-is: the frontend treats 401 as
+      // "your session expired" and would log the user out over bad Twilio keys.
+      return res.status(r.status >= 500 ? 502 : 400)
+        .json({ error: data?.message || "Twilio rejected the call", details: data });
+    }
+    manualCalls[callId].twilioSid = data.sid;
+    console.log(`[manual ${callId}] ringing you on ${agent} (sid=${data.sid}); will bridge to ${prospect}`);
+
+    // Safety net: if neither the callbacks nor the polls ever finish the call,
+    // force it closed (and hang up) once it's past the cap plus ringing time.
+    setTimeout(() => {
+      const c = manualCalls[callId];
+      if (c && c.status === "in-progress") {
+        finalizeManualCall(c, "completed");
+        hangupTwilio(c);
+      }
+    }, (MANUAL_CALL_MAX_SECONDS + MANUAL_RING_SECONDS + 30) * 1000).unref?.();
+
+    res.json({ callId, status: "in-progress", phase: "starting" });
+  } catch (err) {
+    delete manualCalls[callId];
+    res.status(502).json({ error: `Could not reach Twilio: ${err.message}` });
+  }
+});
+
+// Live status for one manual call. Refreshes from Twilio on the way through so
+// the UI gets real state even when PUBLIC_URL isn't configured.
+app.get("/api/manual-call/:callId", requireAuth, async (req, res) => {
+  const call = manualCalls[req.params.callId];
+  if (!call || call.userId !== req.user.id) return res.status(404).json({ error: "Unknown call id" });
+  await refreshManualCall(call);
+  const { acct, userId, lastPoll, ...safe } = call;
+  res.json({ ...safe, phase: manualPhase(call) });
+});
+
+// End a manual call from the app (the ⏹ END button).
+app.post("/api/manual-call/:callId/hangup", requireAuth, async (req, res) => {
+  const call = manualCalls[req.params.callId];
+  if (!call || call.userId !== req.user.id) return res.status(404).json({ error: "Unknown call id" });
+  if (call.reachedYou) await refreshProspectLeg(call);   // last read before the legs tear down
+  await hangupTwilio(call);
+  finalizeManualCall(call, "completed");
+  const { acct, userId, lastPoll, ...safe } = call;
+  res.json({ ...safe, phase: manualPhase(call) });
+});
+
+// Twilio → us: lifecycle of the REP's leg (only registered when PUBLIC_URL is set).
+app.post("/api/manual-status", (req, res) => {
+  res.sendStatus(200); // ack fast; Twilio retries on non-2xx
+  const call = manualCalls[req.query.callId];
+  if (!call) return;
+  const status = req.body.CallStatus || "";
+  if (status) call.twilioStatus = status;
+  if (status === "in-progress") call.reachedYou = true;
+  if (MANUAL_TERMINAL.includes(status)) finalizeManualCall(call, status, req.body.CallDuration);
+});
+
+// Twilio → us: the <Dial> finished, i.e. the PROSPECT's leg is over. This is the
+// authoritative talk time, so record it before the rep's leg wraps up.
+app.post("/api/manual-dial-status", (req, res) => {
+  const call = manualCalls[req.query.callId];
+  if (call) {
+    const status = req.body.DialCallStatus || "";
+    if (status) call.prospectStatus = status === "answered" ? "completed" : status;
+    const dur = Number(req.body.DialCallDuration || 0);
+    if (dur > 0) call.talkSeconds = dur;
+  }
+  // Nothing left to do on the rep's leg once the bridge ends.
+  res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
 });
 
 // ── bulk calling: campaigns ─────────────────────────────────────────────────
