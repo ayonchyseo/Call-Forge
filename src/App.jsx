@@ -200,6 +200,7 @@ const DEFAULT_SETTINGS = {
   twilioSid: "",
   twilioToken: "",
   twilioFrom: "",
+  myPhone: "",     // your own phone — CALL NOW rings this, then bridges to the client
 };
 
 const LANGUAGES = ["English", "Spanish", "French", "German", "Portuguese", "Arabic", "Hindi", "Bangla", "Chinese", "Japanese"];
@@ -450,7 +451,7 @@ function SettingsModal({ settings, onSave, onClose, onReset }) {
       </Field>
 
       <div style={{ fontSize: "10px", letterSpacing: "0.12em", color: INFO, textTransform: "uppercase", margin: "20px 0 10px", borderTop: `1px solid ${BORDER}`, paddingTop: "16px" }}>
-        Twilio — for live AI calls only
+        Twilio — for live AI calls & one-click dialing
       </div>
       <Field label="Twilio Account SID">
         <input style={modalInp} value={d.twilioSid} onChange={(e) => set("twilioSid", e.target.value)} placeholder="AC..." autoComplete="off" />
@@ -458,8 +459,11 @@ function SettingsModal({ settings, onSave, onClose, onReset }) {
       <Field label="Twilio Auth Token">
         <input type="password" style={modalInp} value={d.twilioToken} onChange={(e) => set("twilioToken", e.target.value)} placeholder="••••••••" autoComplete="off" />
       </Field>
-      <Field label="Twilio From number" hint="Your Twilio voice number in international format.">
+      <Field label="Twilio From number" hint="Your Twilio voice number in international format. Also the caller ID clients see when you dial them.">
         <input style={modalInp} value={d.twilioFrom} onChange={(e) => set("twilioFrom", e.target.value)} placeholder="+15551234567" autoComplete="off" />
+      </Field>
+      <Field label="Your phone number" hint="Optional — for manual calls. Set it and 📞 CALL NOW rings THIS phone first, then connects you to the client through Twilio (works on desktop, and the client sees your Twilio number). Leave it empty to keep the old tap-to-dial behaviour.">
+        <input style={modalInp} value={d.myPhone} onChange={(e) => set("myPhone", e.target.value)} placeholder="+15557654321" autoComplete="off" />
       </Field>
 
       <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: "18px", paddingTop: "14px" }}>
@@ -496,7 +500,7 @@ function HelpModal({ onClose }) {
 
       <div style={h}>4 · Generate & call</div>
       <div style={li}>• <b>⚡ Generate Script</b> → personalized script for the selected lead.</div>
-      <div style={li}>• <b>📞 Call Now</b> → dials from your phone (tap-to-dial), you read the script.</div>
+      <div style={li}>• <b>📞 Call Now</b> → you talk to the client yourself. By default it's tap-to-dial from this device; add <b>Your phone number</b> in ⚙ Settings and Twilio rings your phone instead, then connects you to the client — works on a desktop, and the client sees your Twilio number.</div>
       <div style={li}>• <b>🤖 AI Call</b> → the AI agent dials and talks (needs the backend, below).</div>
       <div style={li}>• <b>📋 Start Campaign</b> → tick several clients, then bulk-call them on a schedule (office hours, auto-retries, live Attended/Missed/Declined dashboard). Open <b>📋 Campaigns</b> up top to track them.</div>
 
@@ -528,6 +532,8 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
   const [aiResult, setAiResult] = useState(null);
   const [aiStatus, setAiStatus] = useState("");
   const [aiTranscript, setAiTranscript] = useState([]);
+  const [manualCallId, setManualCallId] = useState(null);   // live Twilio-bridged manual call
+  const [manualPhase, setManualPhase] = useState("");
   const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...loadState(K("settings"), {}) }));
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -538,6 +544,9 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
   const [openCampaignId, setOpenCampaignId] = useState(null);
   const fileRef = useRef();
   const timerRef = useRef();
+  const manualPollRef = useRef();
+  const manualIdRef = useRef(null);       // mirrors manualCallId for cleanup effects
+  const manualClientRef = useRef(null);   // who the live manual call belongs to
   const aiPollRef = useRef();
   const aiPollCountRef = useRef(0);
 
@@ -569,6 +578,10 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
 
   // End call / reset AI state when switching clients
   useEffect(() => {
+    // A bridged manual call is a real phone call — switching clients must hang
+    // it up at Twilio, not just clear the UI, or it would keep running (and
+    // billing) invisibly.
+    if (manualIdRef.current) endManualCall();
     setCalling(false);
     setNoteInput("");
     setAiCalling(false);
@@ -578,7 +591,7 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
     clearInterval(aiPollRef.current);
   }, [selected]);
 
-  useEffect(() => () => clearInterval(aiPollRef.current), []);
+  useEffect(() => () => { clearInterval(aiPollRef.current); clearInterval(manualPollRef.current); }, []);
 
   function toast(msg, type = "success") {
     const id = Date.now() + Math.random();
@@ -766,6 +779,128 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
     else if (result.isLead) toast("Lead captured by AI ✓");
     else if (noConversation) toast(result.summary || "No answer — marked for follow-up", "warn");
     else toast("AI call finished");
+  }
+
+  // ── manual calling through Twilio ─────────────────────────────────────────
+  // With "Your phone number" filled in (⚙ Settings), 📞 CALL NOW stops handing
+  // off to the OS dialer: the backend asks Twilio to ring THAT phone and, once
+  // it's picked up, bridges it to the client. So manual calling works on a
+  // desktop, dials from the Twilio caller ID instead of a personal number, and
+  // CallForge can show live status, time it and end it. With the field empty
+  // the button stays a plain tap-to-dial `tel:` link.
+  const bridgedCalling = Boolean((settings.myPhone || "").trim());
+
+  function manualPhaseLabel(phase) {
+    return {
+      starting: "CALLING YOUR PHONE",
+      "ringing-you": "RINGING YOUR PHONE",
+      "dialing-client": "DIALING THE CLIENT",
+      connected: "CONNECTED",
+      ended: "CALL ENDED",
+    }[phase] || "CALL IN PROGRESS";
+  }
+
+  async function startManualCall() {
+    if (!selectedClient || manualIdRef.current) return;
+    setManualPhase("starting");
+    setCalling(true);
+    try {
+      const res = await fetch(`${apiBase}/api/manual-call`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          clientId: selectedClient.id,
+          name: selectedClient.name,
+          phone: selectedClient.phone,
+          agentPhone: settings.myPhone,
+          // Credentials from Settings (the backend falls back to its own env).
+          twilioSid: settings.twilioSid,
+          twilioToken: settings.twilioToken,
+          twilioFrom: settings.twilioFrom,
+        }),
+      });
+      // Only a genuine auth failure ends the session — a Twilio problem comes
+      // back as a 400 and must not log the user out.
+      if (res.status === 401) { endManualLocally(); toast("Session expired — please sign in again.", "error"); onLogout(); return; }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Server error (${res.status}) — please try again`);
+      manualIdRef.current = data.callId;
+      manualClientRef.current = selectedClient.id;
+      setManualCallId(data.callId);
+      toast("Calling your phone — pick up and we'll connect you");
+      pollManualCall(data.callId, selectedClient.id);
+    } catch (err) {
+      endManualLocally();
+      const cannotReach = err.message.includes("fetch") || err.message.includes("Failed to fetch") || err.message.includes("NetworkError");
+      toast(cannotReach
+        ? "Can't reach the call server. One-click dialing needs the CallForge server — clear 'Your phone number' in ⚙ Settings to go back to tap-to-dial."
+        : err.message, "error");
+    }
+  }
+
+  // Reset the local call UI without touching the server (used when the call is
+  // already over, or never started).
+  function endManualLocally() {
+    clearInterval(manualPollRef.current);
+    manualIdRef.current = null;
+    manualClientRef.current = null;
+    setManualCallId(null);
+    setManualPhase("");
+    setCalling(false);
+  }
+
+  function pollManualCall(callId, clientId) {
+    clearInterval(manualPollRef.current);
+    manualPollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/manual-call/${callId}`, { headers: { Authorization: `Bearer ${token}` } });
+        if (res.status === 401) { endManualLocally(); toast("Session expired — please sign in again.", "error"); onLogout(); return; }
+        // 404 = the server restarted and lost the record. The phone call itself
+        // may still be up, but we can no longer follow it.
+        if (res.status === 404) { endManualLocally(); toast("Lost track of the call — the server may have restarted.", "warn"); return; }
+        if (!res.ok) return; // transient — keep polling
+        const data = await res.json();
+        if (data.phase) setManualPhase(data.phase);
+        if (data.status === "completed") finishManualCall(data, clientId);
+      } catch { /* network blip — keep polling */ }
+    }, 3000);
+  }
+
+  // End the call from the app: hang up at Twilio, then log the outcome.
+  async function endManualCall() {
+    const callId = manualIdRef.current;
+    // Log against the client the call was PLACED for: when this runs from the
+    // client-switch effect, `selected` is already the new client.
+    const clientId = manualClientRef.current;
+    if (!callId) { endManualLocally(); return; }
+    clearInterval(manualPollRef.current);
+    try {
+      const res = await fetch(`${apiBase}/api/manual-call/${callId}/hangup`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) { finishManualCall(data, clientId); return; }
+    } catch { /* fall through — the call is over as far as the UI goes */ }
+    endManualLocally();
+    toast("Call ended", "warn");
+  }
+
+  // A finished manual call is logged like an AI one: a note on the client, and a
+  // status nudge when nobody picked up so the number stays in the pipeline.
+  function finishManualCall(data, clientId) {
+    endManualLocally();
+    const summary = data.summary || "Call ended.";
+    const ts = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short" });
+    const entry = `[${ts}] 📞 Manual call: ${summary}`;
+    setClients((prev) => prev.map((c) => {
+      if (c.id !== clientId) return c;
+      const notes = c.notes ? c.notes + "\n" + entry : entry;
+      // Never downgrade a client you've already qualified — only move an
+      // untouched "new" number to follow-up when the call didn't connect.
+      const status = data.outcome !== "connected" && c.status === "new" ? "follow-up" : c.status;
+      return { ...c, notes, status };
+    }));
+    toast(summary, data.outcome === "connected" ? "success" : "warn");
   }
 
   function saveNote() {
@@ -1156,7 +1291,11 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
                       📞 {selectedClient.phone}
                     </div>
                   </a>
-                  <div style={{ fontSize: "10px", color: MUTED, marginTop: "3px" }}>Tap number to dial · or use CALL button →</div>
+                  <div style={{ fontSize: "10px", color: MUTED, marginTop: "3px" }}>
+                    {bridgedCalling
+                      ? "Tap number to dial from this device · CALL NOW rings your phone, then connects you →"
+                      : "Tap number to dial · or use CALL button →"}
+                  </div>
                 </div>
                 <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
                   <button
@@ -1209,10 +1348,20 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
                   </button>
                   {calling ? (
                     <button
-                      onClick={() => setCalling(false)}
+                      onClick={() => (manualCallId ? endManualCall() : setCalling(false))}
+                      title={manualCallId ? "Hang up the call at Twilio" : "Stop the call timer"}
                       style={{ padding: "9px 20px", background: DANGER, border: "none", borderRadius: "6px", color: "#fff", fontFamily: "inherit", fontSize: "12px", fontWeight: "700", cursor: "pointer", letterSpacing: "0.08em", minWidth: "120px" }}
                     >
                       ⏹ END  {formatTime(callTime)}
+                    </button>
+                  ) : bridgedCalling ? (
+                    // Bridged: Twilio rings YOUR phone and connects you — works on desktop.
+                    <button
+                      onClick={startManualCall}
+                      title={`Twilio rings ${settings.myPhone}, then connects you to ${selectedClient.phone}`}
+                      style={{ padding: "9px 20px", background: ACCENT, border: "none", borderRadius: "8px", color: ACCENT_TEXT, fontFamily: "inherit", fontSize: "12px", fontWeight: "700", cursor: "pointer", letterSpacing: "0.04em", minWidth: "120px", boxShadow: `0 4px 12px ${ACCENT}44` }}
+                    >
+                      📞 CALL NOW
                     </button>
                   ) : (
                     <a
@@ -1221,6 +1370,7 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
                       style={{ textDecoration: "none" }}
                     >
                       <button
+                        title="Dials from this device. Add your phone number in ⚙ Settings to have Twilio ring you and connect the call instead."
                         style={{ padding: "9px 20px", background: ACCENT, border: "none", borderRadius: "8px", color: ACCENT_TEXT, fontFamily: "inherit", fontSize: "12px", fontWeight: "700", cursor: "pointer", letterSpacing: "0.04em", minWidth: "120px", boxShadow: `0 4px 12px ${ACCENT}44` }}
                       >
                         📞 CALL NOW
@@ -1237,7 +1387,9 @@ function Dashboard({ user, token, onLogout, onOpenAdmin }) {
                 {calling && (
                   <div style={{ background: `${ACCENT}08`, border: `1px solid ${ACCENT}33`, borderRadius: "8px", padding: "14px 18px", marginBottom: "16px", display: "flex", alignItems: "center", gap: "12px" }}>
                     <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: ACCENT, animation: "pulse 1s infinite", flexShrink: 0, display: "inline-block" }} />
-                    <span style={{ fontSize: "12px", color: ACCENT, letterSpacing: "0.1em" }}>CALL IN PROGRESS</span>
+                    <span style={{ fontSize: "12px", color: ACCENT, letterSpacing: "0.1em" }}>
+                      {manualCallId ? manualPhaseLabel(manualPhase) : "CALL IN PROGRESS"}
+                    </span>
                     <span style={{ fontSize: "13px", color: ACCENT, fontWeight: "700", marginLeft: "4px" }}>{formatTime(callTime)}</span>
                     <span style={{ fontSize: "11px", color: MUTED, marginLeft: "auto" }}>{selectedClient.name} · {selectedClient.phone}</span>
                   </div>

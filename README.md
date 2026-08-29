@@ -13,7 +13,7 @@ calling to the **US, UK, AU, and NZ**.
 - 📋 **Client Management** — Upload clients via CSV or add them manually
 - 🌐 **Any-language → your-language scripts** — Enter business info in any language; CallForge writes a structured script in the language you pick. Works offline too via a built-in template engine.
 - ⚙ **In-app Settings** — Save your OpenAI/Twilio keys, target language, AI call instructions, and backend URL right in the browser (no `.env` editing required).
-- 📞 **Manual Calling** — Tap-to-dial (`tel:`) with a call timer and notes
+- 📞 **Manual Calling** — Call clients yourself, either by tap-to-dial (`tel:`) or **through Twilio**: it rings your own phone, connects you to the client, shows live status, and logs the outcome (see below)
 - 🤖 **AI Auto-Calling** — An AI agent dials the number itself, holds the conversation, tries to book a meeting, and logs the outcome (see below)
 - 📋 **Bulk Calling Campaigns** — Select many numbers and let the bot work the whole list on a schedule: timezone-aware **office-hours** windows (with per-country overrides), automatic **retries** for missed/declined numbers, overflow rolled to the next day, and a live dashboard of **Attended / Missed / Declined** outcomes (see below)
 - 📊 **Lead Status & Live Stats** — Track Lead ✓ / Follow-up ↺ / Declined ✗ with at-a-glance conversion counts
@@ -70,6 +70,37 @@ input language into a professional script in your chosen language**. With no key
 automatically falls back to a fully offline template engine — so the app always produces a
 usable script. (If you'd rather keep the key on a server, the backend exposes the same
 `/api/generate-script`.)
+
+## Manual Calling (📞 CALL NOW)
+
+**📞 CALL NOW** is for calls *you* make yourself — the AI stays out of it. It works
+in two modes:
+
+| Mode | When | What happens |
+|---|---|---|
+| **Tap-to-dial** (default) | "Your phone number" is empty in ⚙ Settings | The button is a plain `tel:` link — your device's dialer opens. Great on a phone, useless on a desktop, and the client sees *your personal number*. |
+| **Twilio bridge** | You set **Your phone number** in ⚙ Settings | Twilio rings **your** phone first; when you pick up it dials the client and connects you both — with your **Twilio number as the caller ID**. |
+
+The bridged mode is the one to use for real outbound work:
+
+- **Works anywhere** — desktop, laptop, tablet. Your phone is just the handset.
+- **One consistent caller ID** — clients see your Twilio number, never your personal one.
+- **Live status in the app** — *Ringing your phone → Dialing the client → Connected*,
+  with a call timer and an **⏹ END** button that genuinely hangs the call up at Twilio
+  (switching to another client hangs it up too, so a forgotten call can't keep billing).
+- **Logged automatically** — when the call ends, CallForge appends a note like
+  `📞 Manual call: Connected — talked 2m 14s.` (or *"the client didn't answer"*), and
+  nudges an untouched number to **Follow-up** when nobody picked up. Your own notes and
+  Lead/Follow-up/Declined buttons work exactly as before.
+
+Set-up is just the Twilio credentials you already need for AI calls (Account SID, Auth
+Token, From number) plus your own phone number, all in ⚙ Settings. Unlike AI calls,
+**bridged manual calls do not need `PUBLIC_URL`** — Twilio needs no way back to the
+server, so this works even against a plain local backend. Ring time and the maximum
+conversation length are tunable with `MANUAL_RING_SECONDS` / `MANUAL_CALL_MAX_SECONDS`.
+
+> 💡 Twilio bills **both legs** of a bridged call (the leg to your phone and the leg to
+> the client), so a bridged minute costs roughly twice a plain outbound minute.
 
 ## AI Auto-Calling (Twilio + OpenAI only — no Vapi)
 
